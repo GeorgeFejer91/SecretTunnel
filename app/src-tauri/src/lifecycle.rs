@@ -157,6 +157,18 @@ pub enum AttemptOutcome {
 pub trait LifecycleEndpoint: Send + Sync {
     fn start_services(&self, attempt: &Attempt, settings: &Settings) -> Result<(), AppError>;
     fn stop_services(&self, attempt: &Attempt) -> Result<bool, AppError>;
+
+    /// Apply changed settings to an already-running generation. An endpoint
+    /// that can narrow the work - replacing only the part that the change
+    /// actually affects, and leaving the rest serving - overrides this. The
+    /// default is a full restart, which is always correct if not always cheap.
+    fn reconfigure_services(
+        &self,
+        attempt: &Attempt,
+        settings: &Settings,
+    ) -> Result<(), AppError> {
+        self.start_services(attempt, settings)
+    }
 }
 
 /// Outcomes of admitting a request, before any execution lock is taken.
@@ -563,7 +575,13 @@ fn run_worker(
         }
         | LifecycleRequest::Reconfigure {
             settings, ..
-        } => match endpoint.start_services(&attempt, settings) {
+        } => match if matches!(request, LifecycleRequest::Reconfigure { .. }) {
+            // Reconfiguration of a live generation gets the endpoint's
+            // narrower path, which may keep parts of it serving.
+            endpoint.reconfigure_services(&attempt, settings)
+        } else {
+            endpoint.start_services(&attempt, settings)
+        } {
             Ok(()) => {
                 if let Some(readiness) = &readiness {
                     readiness.invalidate();
@@ -703,6 +721,41 @@ mod tests {
     struct Recording {
         starts: Arc<Mutex<Vec<u64>>>,
         stops: Arc<Mutex<Vec<u64>>>,
+        reconfigures: Arc<Mutex<Vec<u64>>>,
+    }
+
+    /// Endpoint that distinguishes the two paths, so the dispatch itself can be
+    /// asserted: a Reconfigure must reach reconfigure_services, never
+    /// start_services. The real endpoint keeps the public tunnel alive on that
+    /// narrow path, so a silent regression to start_services would start
+    /// tearing the users URL down on every folder change again.
+    struct DispatchSpy {
+        record: Recording,
+    }
+
+    impl LifecycleEndpoint for DispatchSpy {
+        fn start_services(&self, attempt: &Attempt, _settings: &Settings) -> Result<(), AppError> {
+            self.record.starts.lock().unwrap().push(attempt.generation);
+            Ok(())
+        }
+
+        fn stop_services(&self, attempt: &Attempt) -> Result<bool, AppError> {
+            self.record.stops.lock().unwrap().push(attempt.generation);
+            Ok(true)
+        }
+
+        fn reconfigure_services(
+            &self,
+            attempt: &Attempt,
+            _settings: &Settings,
+        ) -> Result<(), AppError> {
+            self.record
+                .reconfigures
+                .lock()
+                .unwrap()
+                .push(attempt.generation);
+            Ok(())
+        }
     }
 
     /// Endpoint fake whose start can be paused with barriers and whose behavior
@@ -719,6 +772,7 @@ mod tests {
             let record = Recording {
                 starts: Arc::new(Mutex::new(Vec::new())),
                 stops: Arc::new(Mutex::new(Vec::new())),
+                reconfigures: Arc::new(Mutex::new(Vec::new())),
             };
             (
                 record.clone(),
@@ -948,5 +1002,57 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         panic!("condition not reached within deadline");
+    }
+
+    /// Changing the folder must not rebuild the tunnel. The coordinator has to
+    /// route Reconfigure to the endpoint narrow path so the public URL keeps
+    /// serving across the change; a Reconfigure that lands on start_services
+    /// tears the share down and the users MCP URL 502s mid-session.
+    #[test]
+    fn reconfigure_takes_the_narrow_path_not_a_full_restart() {
+        let record = Recording {
+            starts: Arc::new(Mutex::new(Vec::new())),
+            stops: Arc::new(Mutex::new(Vec::new())),
+            reconfigures: Arc::new(Mutex::new(Vec::new())),
+        };
+        let coordinator = Coordinator::new(Arc::new(DispatchSpy {
+            record: record.clone(),
+        }));
+
+        coordinator.submit(LifecycleRequest::Start {
+            settings: sample_settings(r"C:\project-one"),
+            revision: 1,
+            retry: false,
+        });
+        wait_for(
+            |coordinator: &Coordinator| coordinator.effective_state().is_running(),
+            &coordinator,
+        );
+        assert_eq!(record.starts.lock().unwrap().len(), 1);
+
+        // The user picks a different folder while connected.
+        coordinator.submit(LifecycleRequest::Reconfigure {
+            settings: sample_settings(r"C:\project-two"),
+            revision: 2,
+        });
+        wait_for(
+            |coordinator: &Coordinator| coordinator.effective_state().is_running(),
+            &coordinator,
+        );
+
+        assert_eq!(
+            record.reconfigures.lock().unwrap().len(),
+            1,
+            "reconfigure must use the narrow path"
+        );
+        assert_eq!(
+            record.starts.lock().unwrap().len(),
+            1,
+            "the folder change must not re-run a full start"
+        );
+        assert!(
+            record.stops.lock().unwrap().is_empty(),
+            "the folder change must not stop the tunnel"
+        );
     }
 }

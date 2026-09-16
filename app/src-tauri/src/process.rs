@@ -277,11 +277,77 @@ impl LifecycleEndpoint for ServiceEndpoint {
         runtime.generation = attempt.generation;
         runtime.mcp = Some(mcp);
         runtime.zrok = Some(zrok);
+        runtime.active_zrok_name = Some(settings.zrok_name.clone());
         runtime.starting = false;
         runtime.push_log("app", format!("MCP URL: {}", mcp_url(settings)));
         drop(runtime);
 
         takeover_or_keep_owned_shares(&settings.zrok_name, &self.runtime);
+        Ok(())
+    }
+
+    /// Apply changed settings to a running generation.
+    ///
+    /// Only the MCP server reads the workspace configuration; the zrok share
+    /// forwards to a fixed local port and knows nothing about it. So when the
+    /// tunnel identity is unchanged, changing the folder or the access mode
+    /// must not touch the tunnel: tearing it down drops every connected client
+    /// and re-registers the share for no reason, and the public URL 502s until
+    /// the replacement finishes. Swapping just the MCP child keeps the public
+    /// URL continuously valid, with a gap no longer than one process restart.
+    ///
+    /// Anything that changes the tunnel itself (a different zrok name) still
+    /// goes through the full path.
+    fn reconfigure_services(
+        &self,
+        attempt: &Attempt,
+        settings: &Settings,
+    ) -> Result<(), AppError> {
+        if !self.can_swap_mcp_in_place(settings) {
+            return self.start_services(attempt, settings);
+        }
+        if attempt.is_cancelled() {
+            return Err(AppError::new("cancelled", "Superseded before reconfigure."));
+        }
+        validate_zrok_name(&settings.zrok_name)?;
+        effective_workspace_path(&settings.workspace_path)?;
+
+        // Retire only the MCP child. The zrok child and its share stay live.
+        let old_mcp = match self.runtime.lock() {
+            Ok(mut runtime) => runtime.mcp.take(),
+            Err(_) => return Err(AppError::new("runtime_lock", "Runtime state is unavailable.")),
+        };
+        if let Some(mut child) = old_mcp {
+            let pid = child.id();
+            kill_process_tree(pid);
+            if !confirmed_exited(&[pid], CLEANUP_CONFIRM_DEADLINE) {
+                return Err(AppError::new(
+                    "cleanup_unconfirmed",
+                    "The previous MCP server could not be stopped.",
+                ));
+            }
+            let _ = child.wait();
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.untrack_child(pid, AssetClass::McpNode);
+            }
+        }
+
+        // Activate the replacement configuration only after the old server is
+        // confirmed gone, so the two can never serve different roots at once.
+        write_managed_mcp_config(&self.paths, settings)?;
+        if attempt.is_cancelled() {
+            return Err(AppError::new("cancelled", "Superseded after config write."));
+        }
+        let mcp = self.spawn_mcp(attempt, settings)?;
+
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| AppError::new("runtime_lock", "Runtime state is unavailable."))?;
+        runtime.generation = attempt.generation;
+        runtime.mcp = Some(mcp);
+        runtime.starting = false;
+        runtime.push_log("app", "Applied new settings without interrupting the tunnel.");
         Ok(())
     }
 
@@ -341,6 +407,21 @@ impl LifecycleEndpoint for ServiceEndpoint {
 }
 
 impl ServiceEndpoint {
+    /// True when the live generation's tunnel can be kept across this change:
+    /// a zrok child is still committed and the reserved name is unchanged. The
+    /// local port cannot change while the process runs, so it needs no check.
+    fn can_swap_mcp_in_place(&self, settings: &Settings) -> bool {
+        match self.runtime.lock() {
+            Ok(runtime) => {
+                runtime.generation != 0
+                    && runtime.mcp.is_some()
+                    && runtime.zrok.is_some()
+                    && runtime.active_zrok_name.as_deref() == Some(settings.zrok_name.as_str())
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Stop and confirm termination of any currently committed children that
     /// belong to a previous generation. Returns `Ok(true)` when something was
     /// retired and confirmed dead, `Ok(false)` when nothing was running, and
@@ -1116,6 +1197,10 @@ struct RuntimeState {
     owned_share_tokens: HashSet<String>,
     known_mcp_pids: HashSet<u32>,
     known_zrok_pids: HashSet<u32>,
+    /// zrok name the currently committed tunnel was started for. A
+    /// reconfiguration that keeps this name can swap the MCP server underneath
+    /// the live tunnel instead of rebuilding the share.
+    active_zrok_name: Option<String>,
 }
 
 impl RuntimeState {
@@ -1344,15 +1429,35 @@ fn process_alive(pid: u32) -> bool {
         .arg("/FO")
         .arg("CSV")
         .arg("/NH")
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
     suppress_console_window(&mut command);
-    // `tasklist` returns exit code 0 when the process exists, 1 when it does
-    // not. A silent failure means we cannot confirm aliveness -> treat as gone.
-    command
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    // `tasklist` exits 0 whether or not the filter matched anything: for an
+    // unknown pid it prints "INFO: No tasks are running which match the
+    // specified criteria." and still succeeds. Trusting the exit code reports
+    // every pid as alive forever, which makes cleanup confirmation impossible
+    // and wedges the lifecycle in CleanupFailed. Only the output distinguishes
+    // the two cases, so parse the row. Failure to run the check at all means we
+    // cannot observe the process; treat that as gone rather than blocking
+    // forever on an answer that will never come.
+    let Ok(output) = command.output() else {
+        return false;
+    };
+    tasklist_row_matches_pid(&String::from_utf8_lossy(&output.stdout), pid)
+}
+
+/// True when a `tasklist /FO CSV /NH` listing contains a row for `pid`. Rows
+/// look like `"name.exe","1234","Console","1","12,345 K"`; the informational
+/// "no tasks" line has no such fields.
+#[cfg(windows)]
+fn tasklist_row_matches_pid(output: &str, pid: u32) -> bool {
+    let wanted = pid.to_string();
+    output.lines().any(|line| {
+        line.split("\",\"")
+            .nth(1)
+            .map(|field| field.trim_matches('"').trim() == wanted)
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(not(windows))]
@@ -1909,7 +2014,13 @@ mod tests {
         validate_zrok_token, zrok_name_already_reserved, zrok_enable_token_from_environment,
         zrok_status_indicates_enabled,
     };
+    #[cfg(windows)]
+    use super::{confirmed_exited, kill_process_tree, process_alive, tasklist_row_matches_pid};
+    #[cfg(windows)]
+    use std::process::Command;
     use std::sync::Mutex;
+    #[cfg(windows)]
+    use std::time::Duration;
     use std::{env, fs};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -2083,5 +2194,50 @@ To create a local environment use the zrok2 enable command.
         } else {
             env::remove_var("SECRET_TUNNEL_STATUS_FILE");
         }
+    }
+
+    /// tasklist exits 0 even when its filter matches nothing, so liveness has
+    /// to come from the row itself. Getting this wrong reports every pid as
+    /// alive, cleanup can never be confirmed, and the lifecycle wedges in
+    /// CleanupFailed on the first reconfigure.
+    #[cfg(windows)]
+    #[test]
+    fn tasklist_no_match_line_is_not_a_live_process() {
+        let no_match = "INFO: No tasks are running which match the specified criteria.";
+        assert!(!tasklist_row_matches_pid(no_match, 999_999));
+        assert!(!tasklist_row_matches_pid("", 1234));
+
+        let row = "\"secret-tunnel.exe\",\"2624\",\"Console\",\"1\",\"24,624 K\"";
+        assert!(tasklist_row_matches_pid(row, 2624));
+        // A pid appearing in another column must not count as a match.
+        assert!(!tasklist_row_matches_pid(row, 1));
+        assert!(!tasklist_row_matches_pid(row, 24));
+    }
+
+    /// End-to-end against a real process: alive while it runs, and confirmed
+    /// gone once it exits. This is the check the whole cleanup path depends on.
+    #[cfg(windows)]
+    #[test]
+    fn process_liveness_tracks_a_real_child() {
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping -n 30 127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn test child");
+        let pid = child.id();
+
+        kill_process_tree(pid);
+        let _ = child.wait();
+        // This is the direction that was broken: because `tasklist` exits 0 for
+        // a missing pid, every dead process still looked alive, so cleanup was
+        // never confirmable and the lifecycle wedged in CleanupFailed. The
+        // positive direction is covered deterministically by the parser test;
+        // asserting it here as well depends on `tasklist` observing a
+        // just-spawned process, which is racy under a parallel test run.
+        assert!(
+            confirmed_exited(&[pid], Duration::from_secs(10)),
+            "cleanup must be confirmable once the child is gone"
+        );
     }
 }
