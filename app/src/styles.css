@@ -193,10 +193,34 @@ body.running.flow-ready .hero-art-flow {
   mask: url("/secret-tunnel-title.svg") center / contain no-repeat;
 }
 
+/* Seamless loop. The palette is a palindrome, teal through red and back, laid
+   out twice across an image two container-widths wide. Shifting by exactly one
+   container width therefore advances exactly one whole cycle, so the last frame
+   is identical to the first and there is no snap. The previous version ran a
+   one-way ramp that jumped from red straight back to teal at the loop point. */
 body.running .title-art {
-  background: linear-gradient(90deg, #0f766e 0%, #14b8a6 24%, #2563eb 48%, #f59e0b 72%, #dc2626 100%);
-  background-size: 240% 100%;
-  animation: title-elements 3600ms linear infinite;
+  background: linear-gradient(
+    90deg,
+    #0f766e 0%,
+    #14b8a6 6.25%,
+    #2563eb 12.5%,
+    #f59e0b 18.75%,
+    #dc2626 25%,
+    #f59e0b 31.25%,
+    #2563eb 37.5%,
+    #14b8a6 43.75%,
+    #0f766e 50%,
+    #14b8a6 56.25%,
+    #2563eb 62.5%,
+    #f59e0b 68.75%,
+    #dc2626 75%,
+    #f59e0b 81.25%,
+    #2563eb 87.5%,
+    #14b8a6 93.75%,
+    #0f766e 100%
+  );
+  background-size: 200% 100%;
+  animation: title-elements 4800ms linear infinite;
 }
 
 .tagline {
@@ -212,7 +236,8 @@ body.running .title-art {
   }
 
   100% {
-    background-position: 240% 50%;
+    /* Exactly one container width, which is exactly one palette cycle. */
+    background-position: 100% 50%;
   }
 }
 

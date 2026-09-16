@@ -32,14 +32,49 @@
       }
       .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px 72px; }
       header { padding: 56px 0 8px; text-align: center; }
-      h1 {
-        margin: 0 0 8px;
-        font-size: clamp(32px, 6vw, 48px);
-        letter-spacing: 0.06em;
-        background: linear-gradient(90deg, #f97316, #14b8a6 40%, #38bdf8);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      .hero-logo {
+        width: clamp(120px, 26vw, 168px);
+        height: auto;
+        margin-bottom: 4px;
+      }
+      /* The same lettering asset the app uses, painted the same way: the SVG is
+         a mask and the colour comes from the background underneath, so the
+         wordmark matches the app's "running" gradient rather than being a
+         separate picture that can drift out of sync. */
+      .title-art {
+        width: min(420px, 100%);
+        height: clamp(34px, 8vw, 46px);
+        margin: 0 auto 10px;
+        /* Seamless loop, identical to the app: the palette is a palindrome laid
+           out twice across an image two container-widths wide, so shifting by
+           one container width advances exactly one cycle and the last frame
+           matches the first instead of snapping red back to teal. */
+        background: linear-gradient(
+          90deg,
+          #0f766e 0%, #14b8a6 6.25%, #2563eb 12.5%, #f59e0b 18.75%, #dc2626 25%,
+          #f59e0b 31.25%, #2563eb 37.5%, #14b8a6 43.75%, #0f766e 50%,
+          #14b8a6 56.25%, #2563eb 62.5%, #f59e0b 68.75%, #dc2626 75%,
+          #f59e0b 81.25%, #2563eb 87.5%, #14b8a6 93.75%, #0f766e 100%
+        );
+        background-size: 200% 100%;
+        animation: title-elements 4800ms linear infinite;
+        -webkit-mask: url("secret-tunnel-title.svg") center / contain no-repeat;
+        mask: url("secret-tunnel-title.svg") center / contain no-repeat;
+      }
+      @keyframes title-elements {
+        0% { background-position: 0% 50%; }
+        100% { background-position: 100% 50%; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .title-art { animation: none; background: #f8fafc; }
       }
       .tagline { margin: 0; color: var(--muted); font-size: 18px; }
       .lede { margin: 28px auto 0; max-width: 660px; color: var(--muted); text-align: center; }
@@ -115,7 +150,13 @@
   <body>
     <div class="wrap">
       <header>
-        <h1>SECRET TUNNEL</h1>
+        <h1 class="sr-only">Secret Tunnel</h1>
+        <img
+          class="hero-logo"
+          src="secret-tunnel-cloud.svg"
+          alt="A local computer connected to a cloud through a tunnel"
+        />
+        <div class="title-art" role="img" aria-label="Secret Tunnel"></div>
         <p class="tagline">Give ChatGPT one folder on your computer.</p>
       </header>
 
