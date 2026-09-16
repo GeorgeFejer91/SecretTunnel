@@ -26,6 +26,9 @@ type Status = {
   zrokInstalled: boolean;
   zrokEnabled: boolean;
   gptRepoMcpFound: boolean;
+  workspaceConfigured: boolean;
+  startupBlockedReason: string | null;
+  startupBlockedMessage: string | null;
   logs: LogLine[];
 };
 

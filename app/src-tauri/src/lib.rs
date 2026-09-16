@@ -1,4 +1,5 @@
 mod commands;
+mod diag;
 mod error;
 mod process;
 mod settings;
@@ -9,8 +10,21 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let paths = settings::app_paths().expect("failed to resolve app data paths");
-    let launch_override_result = settings::apply_launch_environment_overrides(&paths);
-    let app_state = AppState::new(paths);
+
+    // Non-mutating preflight / profile-report mode: when
+    // SECRET_TUNNEL_PROFILE_REPORT is set, write a JSON report describing the
+    // resolved profile (proving SECRET_TUNNEL_CONFIG_DIR isolation works), then
+    // exit before touching settings, services, or the UI. The smoke harness uses
+    // this to verify it is about to run against an isolated, honoring binary.
+    if let Some(report_path) = std::env::var_os("SECRET_TUNNEL_PROFILE_REPORT") {
+        write_profile_report(&paths, &report_path);
+        return;
+    }
+
+    let launch_environment = settings::apply_launch_environment_overrides(&paths)
+        .ok()
+        .flatten();
+    let app_state = AppState::with_launch_environment(paths, launch_environment);
     let startup_state = app_state.clone();
 
     let builder = tauri::Builder::default()
@@ -28,16 +42,6 @@ pub fn run() {
             std::thread::spawn({
                 let state = startup_state.clone();
                 move || {
-                    match launch_override_result {
-                        Ok(true) => state.push_app_log("Applied launch environment settings."),
-                        Ok(false) => {}
-                        Err(error) => {
-                            state.push_app_log(format!(
-                                "Launch environment settings ignored: {}",
-                                error.message
-                            ));
-                        }
-                    }
                     if let Err(error) = state.enable_zrok_from_environment_if_present() {
                         state.push_app_log(format!("zrok auto-enable failed: {}", error.message));
                     }
@@ -74,6 +78,30 @@ pub fn run() {
     builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn write_profile_report(paths: &settings::AppPaths, report_path: &std::ffi::OsStr) {
+    use serde_json::json;
+
+    let report = json!({
+        "binary": "secret-tunnel",
+        "identity": diag::build_identity(),
+        "fingerprint": diag::executable_fingerprint(),
+        "pid": std::process::id(),
+        "profileDir": paths.config_dir,
+        "settingsPath": paths.settings_path,
+        "managedConfigPath": paths.managed_config_path,
+        "diagnosticsPath": paths.diagnostics_path,
+        "isolatedProfile": std::env::var_os("SECRET_TUNNEL_CONFIG_DIR").is_some(),
+    });
+
+    if let Some(parent) = std::path::Path::new(report_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(
+        report_path,
+        serde_json::to_vec_pretty(&report).unwrap_or_default(),
+    );
 }
 
 fn launched_in_background() -> bool {

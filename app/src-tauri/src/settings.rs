@@ -5,12 +5,15 @@ use serde_json::json;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct AppPaths {
+    pub config_dir: PathBuf,
     pub settings_path: PathBuf,
     pub managed_config_path: PathBuf,
+    pub diagnostics_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,26 +95,73 @@ impl Default for Settings {
 }
 
 pub fn app_paths() -> Result<AppPaths, AppError> {
-    let dirs = ProjectDirs::from("com", "GeorgeFejer", "ChatGPT Local MCP Launcher")
-        .ok_or_else(|| AppError::new("app_data", "Could not resolve app data directory."))?;
-    let config_dir = dirs.config_dir();
-    fs::create_dir_all(config_dir)?;
+    let config_dir = match config_dir_override()? {
+        Some(dir) => dir,
+        None => {
+            let dirs = ProjectDirs::from("com", "GeorgeFejer", "ChatGPT Local MCP Launcher")
+                .ok_or_else(|| AppError::new("app_data", "Could not resolve app data directory."))?;
+            dirs.config_dir().to_path_buf()
+        }
+    };
+    fs::create_dir_all(&config_dir).map_err(|_| {
+        AppError::new(
+            "config_dir_unavailable",
+            "The application configuration directory cannot be created or written.",
+        )
+    })?;
     Ok(AppPaths {
+        config_dir: config_dir.clone(),
         settings_path: config_dir.join("settings.json"),
         managed_config_path: config_dir.join("gpt-repo-mcp.config.json"),
+        diagnostics_path: config_dir.join("diagnostics.log"),
     })
 }
 
+/// `SECRET_TUNNEL_CONFIG_DIR` selects the exact configuration directory used for
+/// settings, the managed MCP configuration, and diagnostics. When set it is used
+/// verbatim: no organization/application suffix is appended, and an invalid or
+/// unwritable override fails hard rather than falling back to the production
+/// profile. This is the isolation mechanism used by the live smoke harness.
+fn config_dir_override() -> Result<Option<PathBuf>, AppError> {
+    let Some(value) = env::var_os("SECRET_TUNNEL_CONFIG_DIR") else {
+        return Ok(None);
+    };
+    let trimmed = value.to_string_lossy().trim().to_string();
+    if trimmed.is_empty() {
+        return Err(AppError::new(
+            "invalid_config_dir",
+            "SECRET_TUNNEL_CONFIG_DIR must not be empty.",
+        ));
+    }
+    let path = PathBuf::from(&trimmed);
+    if !path.is_absolute() {
+        return Err(AppError::new(
+            "invalid_config_dir",
+            "SECRET_TUNNEL_CONFIG_DIR must be an absolute path.",
+        ));
+    }
+    Ok(Some(path))
+}
+
+/// Read settings without persisting anything. This is the observation path:
+/// status polling must never rewrite the settings file.
+pub fn load_settings(paths: &AppPaths) -> Result<Option<Settings>, AppError> {
+    if !paths.settings_path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&paths.settings_path)?;
+    let settings: Settings = serde_json::from_str(&raw)?;
+    Ok(Some(settings))
+}
+
+/// Load existing settings, or create defaults on a genuine first run.
+/// Reads are observation-only; normalization is applied in memory only.
+/// A missing or temporarily unavailable workspace is preserved rather than
+/// replaced with `None`: it remains stored so the user does not lose their
+/// selection, but startup is blocked until the workspace is reachable again.
 pub fn load_or_create_settings(paths: &AppPaths) -> Result<Settings, AppError> {
-    if paths.settings_path.exists() {
-        let raw = fs::read_to_string(&paths.settings_path)?;
-        let settings: Settings = serde_json::from_str(&raw)?;
-        let mut normalized = settings.normalize();
-        if let Some(path) = normalized.workspace_path.clone() {
-            normalized.workspace_path = validate_workspace_path(&path).ok();
-        }
-        save_settings(paths, &normalized)?;
-        return Ok(normalized);
+    if let Some(raw) = load_settings(paths)? {
+        return Ok(raw.normalize());
     }
 
     let settings = Settings::default();
@@ -119,18 +169,59 @@ pub fn load_or_create_settings(paths: &AppPaths) -> Result<Settings, AppError> {
     Ok(settings)
 }
 
+/// Return the effective workspace path by validating the stored selection.
+/// This does not modify settings. It returns `Ok(None)` when no workspace
+/// is configured, `Ok(Some(path))` when the workspace is available and safe,
+/// and `Err` with a specific code when the stored selection is blocked.
+pub fn effective_workspace_path(
+    workspace_path: &Option<String>,
+) -> Result<Option<String>, AppError> {
+    let Some(path) = workspace_path.as_deref() else {
+        return Ok(None);
+    };
+    validate_workspace_path(path).map(Some)
+}
+
 pub fn save_settings(paths: &AppPaths, settings: &Settings) -> Result<(), AppError> {
     if let Some(parent) = paths.settings_path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(|_| {
+            AppError::new(
+                "settings_write_failed",
+                "Could not create the settings directory.",
+            )
+        })?;
     }
-    let tmp = paths.settings_path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec_pretty(settings)?)?;
-    fs::rename(tmp, &paths.settings_path)?;
+    let tmp = paths
+        .settings_path
+        .with_extension(format!(
+            "json.tmp.{}.{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+    if let Err(error) = fs::write(&tmp, serde_json::to_vec_pretty(settings)?) {
+        let _ = fs::remove_file(&tmp);
+        return Err(AppError::new("settings_write_failed", error.to_string()));
+    }
+    if let Err(error) = fs::rename(&tmp, &paths.settings_path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(AppError::new("settings_write_failed", error.to_string()));
+    }
     Ok(())
 }
 
-pub fn apply_launch_environment_overrides(paths: &AppPaths) -> Result<bool, AppError> {
-    let mut settings = load_or_create_settings(paths)?;
+/// Compute settings with any in-memory launch overrides applied. Does NOT
+/// persist the result: the override values live only for this process's
+/// lifetime. This allows the smoke harness to inject a test workspace, zrok
+/// name, and path token without touching the production settings file.
+pub fn apply_launch_environment_overrides(
+    paths: &AppPaths,
+) -> Result<Option<Settings>, AppError> {
+    // Purely in-memory: load existing settings without creating a file, and use
+    // defaults only as a base for the override merge. Nothing is persisted here.
+    let mut settings = load_settings(paths)?.unwrap_or_default();
     let mut changed = false;
 
     if let Some(path) = launch_env("SECRET_TUNNEL_WORKSPACE_PATH") {
@@ -150,10 +241,7 @@ pub fn apply_launch_environment_overrides(paths: &AppPaths) -> Result<bool, AppE
         changed = true;
     }
 
-    if changed {
-        save_settings(paths, &settings)?;
-    }
-    Ok(changed)
+    Ok(changed.then_some(settings))
 }
 
 pub fn validate_zrok_name(value: &str) -> Result<String, AppError> {
@@ -216,7 +304,7 @@ pub fn validate_workspace_path(path: &str) -> Result<String, AppError> {
     }
     let canonical = fs::canonicalize(&raw).map_err(|_| {
         AppError::new(
-            "invalid_folder",
+            "folder_unavailable",
             "That folder does not exist or cannot be read.",
         )
     })?;
@@ -292,6 +380,35 @@ pub fn mcp_url(settings: &Settings) -> String {
         "https://{}.shares.zrok.io/t/{}/mcp",
         settings.zrok_name, settings.public_path_token
     )
+}
+
+/// Replace credential-bearing strings with a redacted marker so that
+/// diagnostic output and logs do not leak secrets.
+pub fn redact_secrets(input: &str, secrets: &[String]) -> String {
+    let mut out = input.to_string();
+    for secret in secrets {
+        if !secret.is_empty() && secret.len() >= 4 {
+            out = out.replace(secret, "[redacted]");
+        }
+    }
+    out
+}
+
+/// Collect secrets that should be redacted from diagnostic output.
+pub fn secrets_for_redaction(settings: &Settings) -> Vec<String> {
+    let mut secrets = Vec::new();
+    if !settings.public_path_token.is_empty() {
+        secrets.push(settings.public_path_token.clone());
+    }
+    // Also redact the enable token if present in the process environment,
+    // which is transient but still a credential.
+    if let Some(token) = env::var_os("SECRET_TUNNEL_ZROK_ENABLE_TOKEN") {
+        let t = token.to_string_lossy().trim().to_string();
+        if t.len() >= 8 {
+            secrets.push(t);
+        }
+    }
+    secrets
 }
 
 fn launch_env(variable: &str) -> Option<String> {
@@ -409,15 +526,28 @@ pub fn normalize_windows_verbatim_prefix(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_launch_environment_overrides, fresh_public_path_token, fresh_zrok_name,
-        is_home_directory, load_or_create_settings, normalize_windows_verbatim_prefix,
-        save_settings, validate_public_path_token, validate_zrok_name, AccessMode, AppPaths,
-        Settings,
+        apply_launch_environment_overrides, effective_workspace_path, fresh_public_path_token,
+        fresh_zrok_name, is_home_directory, load_or_create_settings, load_settings,
+        normalize_windows_verbatim_prefix, redact_secrets, save_settings,
+        validate_public_path_token, validate_zrok_name, AccessMode, AppPaths, Settings,
     };
     use std::sync::Mutex;
     use std::{env, fs};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_paths() -> AppPaths {
+        let root = env::temp_dir().join(format!(
+            "secret-tunnel-settings-test-{}",
+            std::process::id()
+        ));
+        AppPaths {
+            config_dir: root.clone(),
+            settings_path: root.join("settings.json"),
+            managed_config_path: root.join("gpt-repo-mcp.config.json"),
+            diagnostics_path: root.join("diagnostics.log"),
+        }
+    }
 
     #[test]
     fn validates_zrok_names() {
@@ -492,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn clears_unsafe_saved_workspace_path() {
+    fn preserves_unsafe_workspace_in_stored_settings() {
         let _guard = ENV_LOCK.lock().unwrap();
         let root = env::temp_dir().join(format!(
             "secret-tunnel-settings-test-{}",
@@ -501,8 +631,10 @@ mod tests {
         let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
         let paths = AppPaths {
+            config_dir: root.clone(),
             settings_path: root.join("settings.json"),
             managed_config_path: root.join("gpt-repo-mcp.config.json"),
+            diagnostics_path: root.join("diagnostics.log"),
         };
         let previous = env::var_os("USERPROFILE");
         env::set_var("USERPROFILE", &home);
@@ -512,8 +644,19 @@ mod tests {
         };
         save_settings(&paths, &settings).unwrap();
 
+        // load_or_create_settings must preserve the stored path (observation-only)
         let loaded = load_or_create_settings(&paths).unwrap();
-        assert_eq!(loaded.workspace_path, None);
+        assert_eq!(loaded.workspace_path, Some(home.to_string_lossy().to_string()));
+
+        // effective_workspace_path blocks the unsafe selection without erasing it
+        let effective = effective_workspace_path(&loaded.workspace_path);
+        assert!(effective.is_err());
+        let err = effective.unwrap_err();
+        assert_eq!(err.code, "unsafe_folder");
+
+        // The on-disk file is unchanged
+        let reloaded = load_settings(&paths).unwrap().unwrap();
+        assert_eq!(reloaded.workspace_path, Some(home.to_string_lossy().to_string()));
 
         if let Some(previous) = previous {
             env::set_var("USERPROFILE", previous);
@@ -524,7 +667,44 @@ mod tests {
     }
 
     #[test]
-    fn applies_launch_environment_overrides() {
+    fn preserves_unavailable_workspace_in_stored_settings() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = env::temp_dir().join(format!(
+            "secret-tunnel-unavailable-test-{}",
+            std::process::id()
+        ));
+        let paths = AppPaths {
+            config_dir: root.clone(),
+            settings_path: root.join("settings.json"),
+            managed_config_path: root.join("gpt-repo-mcp.config.json"),
+            diagnostics_path: root.join("diagnostics.log"),
+        };
+        let missing = r"C:\nonexistent\fake\folder";
+        let settings = Settings {
+            workspace_path: Some(missing.to_string()),
+            ..Settings::default()
+        };
+        save_settings(&paths, &settings).unwrap();
+
+        // load_or_create_settings must preserve the stored path (observation-only)
+        let loaded = load_or_create_settings(&paths).unwrap();
+        assert_eq!(loaded.workspace_path, Some(missing.to_string()));
+
+        // effective_workspace_path reports the folder as unavailable
+        let effective = effective_workspace_path(&loaded.workspace_path);
+        assert!(effective.is_err());
+        let err = effective.unwrap_err();
+        assert_eq!(err.code, "folder_unavailable");
+
+        // The on-disk file is unchanged
+        let reloaded = load_settings(&paths).unwrap().unwrap();
+        assert_eq!(reloaded.workspace_path, Some(missing.to_string()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn applies_launch_environment_overrides_in_memory_only() {
         let _guard = ENV_LOCK.lock().unwrap();
         let root = env::temp_dir().join(format!(
             "secret-tunnel-launch-env-test-{}",
@@ -533,8 +713,10 @@ mod tests {
         let workspace = root.join("workspace");
         fs::create_dir_all(&workspace).unwrap();
         let paths = AppPaths {
+            config_dir: root.clone(),
             settings_path: root.join("settings.json"),
             managed_config_path: root.join("gpt-repo-mcp.config.json"),
+            diagnostics_path: root.join("diagnostics.log"),
         };
 
         let previous_workspace = env::var_os("SECRET_TUNNEL_WORKSPACE_PATH");
@@ -547,23 +729,38 @@ mod tests {
         env::set_var("SECRET_TUNNEL_ZROK_NAME", "Launch-MCP-1");
         env::set_var("SECRET_TUNNEL_PUBLIC_PATH_TOKEN", "token_123456");
 
-        assert!(apply_launch_environment_overrides(&paths).unwrap());
-        let loaded = load_or_create_settings(&paths).unwrap();
-        assert_eq!(loaded.access_mode, AccessMode::ReadWrite);
-        assert_eq!(loaded.zrok_name, "launch-mcp-1");
-        assert_eq!(loaded.public_path_token, "token_123456");
+        let result = apply_launch_environment_overrides(&paths).unwrap();
+        assert!(result.is_some());
+        let overridden = result.unwrap();
+        assert_eq!(overridden.access_mode, AccessMode::ReadWrite);
+        assert_eq!(overridden.zrok_name, "launch-mcp-1");
+        assert_eq!(overridden.public_path_token, "token_123456");
         assert_eq!(
-            loaded.workspace_path,
+            overridden.workspace_path,
             Some(normalize_windows_verbatim_prefix(
                 &fs::canonicalize(&workspace).unwrap().to_string_lossy()
             ))
         );
+
+        // The settings file was NOT modified by the in-memory override
+        let persisted = load_settings(&paths).unwrap();
+        assert!(persisted.is_none(), "no settings file should have been created");
 
         restore_env("SECRET_TUNNEL_WORKSPACE_PATH", previous_workspace);
         restore_env("SECRET_TUNNEL_ACCESS_MODE", previous_mode);
         restore_env("SECRET_TUNNEL_ZROK_NAME", previous_name);
         restore_env("SECRET_TUNNEL_PUBLIC_PATH_TOKEN", previous_token);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn redacts_credentials_from_output() {
+        let token = "abcdef1234567890";
+        let url = format!("https://foo.shares.zrok.io/t/{token}/mcp");
+        let secrets = vec![token.to_string()];
+        let redacted = redact_secrets(&url, &secrets);
+        assert!(!redacted.contains(token));
+        assert!(redacted.contains("[redacted]"));
     }
 
     fn restore_env(variable: &str, value: Option<std::ffi::OsString>) {

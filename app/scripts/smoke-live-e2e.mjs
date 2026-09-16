@@ -35,13 +35,15 @@ if (!zrokEnvironmentEnabled() && !enableToken) {
 
 const tempRoot = await mkdtemp(join(tmpdir(), "secret-tunnel-live-e2e-"));
 const workspace = join(tempRoot, "workspace");
-const profileRoot = join(tempRoot, "profile");
+const configDir = join(tempRoot, "profile");
 const zrokName = `st${randomUUID().replaceAll("-", "").slice(0, 20)}`;
 const publicPathToken = randomUUID().replaceAll("-", "");
+const localPort = "18787";
 const mcpUrl = `https://${zrokName}.shares.zrok.io/t/${publicPathToken}/mcp`;
 const stdoutPath = join(tempRoot, "secret-tunnel.stdout.log");
 const stderrPath = join(tempRoot, "secret-tunnel.stderr.log");
 const statusPath = join(tempRoot, "secret-tunnel.status.json");
+const reportPath = join(tempRoot, "profile-report.json");
 
 let child = null;
 let stdout = "";
@@ -50,21 +52,61 @@ let stderr = "";
 try {
   await mkdir(workspace, { recursive: true });
   await writeFile(join(workspace, "README.md"), "# Secret Tunnel live E2E\n");
+  await mkdir(configDir, { recursive: true });
+
+  // Profile preflight: ask the binary to write a profile report and exit.
+  // This proves it supports SECRET_TUNNEL_CONFIG_DIR isolation before we
+  // launch the real test against an isolated config.
+  const preflightEnv = {
+    ...process.env,
+    SECRET_TUNNEL_CONFIG_DIR: configDir,
+    SECRET_TUNNEL_PROFILE_REPORT: reportPath,
+  };
+  const preflight = spawn(appPath, [], {
+    cwd: dirname(appPath),
+    env: preflightEnv,
+    detached: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const [preflightExit] = await Promise.race([
+    new Promise((resolvePromise) => preflight.on("exit", (code) => resolvePromise([code]))),
+    new Promise((resolvePromise) => setTimeout(() => resolvePromise([null]), 10_000)),
+  ]);
+  if (preflightExit !== 0 && preflightExit !== null) {
+    throw new Error(`Profile preflight exited with code ${preflightExit}`);
+  }
+  let report = null;
+  try {
+    report = JSON.parse(await readFile(reportPath, "utf8"));
+  } catch {
+    throw new Error("Profile preflight did not produce a valid report. This binary may not support SECRET_TUNNEL_CONFIG_DIR.");
+  }
+  if (!report.isolatedProfile) {
+    throw new Error(
+      "Profile preflight did not report an isolated profile. " +
+      "This binary does not honor SECRET_TUNNEL_CONFIG_DIR; not running the live test."
+    );
+  }
+  console.log(`Profile preflight OK: ${report.identity} (config: ${configDir})`);
+
+  // Record the production settings hash before the live test
+  const productionSettingsHash = await readProductionSettingsHash();
 
   const env = {
     ...process.env,
+    SECRET_TUNNEL_CONFIG_DIR: configDir,
     SECRET_TUNNEL_WORKSPACE_PATH: workspace,
     SECRET_TUNNEL_ACCESS_MODE: "read",
     SECRET_TUNNEL_ZROK_NAME: zrokName,
     SECRET_TUNNEL_PUBLIC_PATH_TOKEN: publicPathToken,
     SECRET_TUNNEL_STATUS_FILE: statusPath,
+    SECRET_TUNNEL_LOCAL_PORT: localPort,
   };
 
   if (enableToken) {
     env.SECRET_TUNNEL_ZROK_ENABLE_TOKEN = enableToken;
   }
-
-  applyIsolatedProfileEnv(env, profileRoot);
 
   child = spawn(appPath, ["--background"], {
     cwd: dirname(appPath),
@@ -86,6 +128,17 @@ try {
   await waitForZrokEnabled();
   await waitForMcpToolSurface(mcpUrl);
 
+  // Verify production settings were not modified
+  const postHash = await readProductionSettingsHash();
+  if (productionSettingsHash !== postHash) {
+    throw new Error(
+      `Production settings file was modified during the live test!\n` +
+      `Before: ${productionSettingsHash}\nAfter:  ${postHash}\n` +
+      `This is a critical isolation failure.`
+    );
+  }
+  console.log("Production settings hash unchanged: isolation verified.");
+
   console.log(`Live E2E passed. MCP URL: ${mcpUrl}`);
 } catch (error) {
   await writeFile(stdoutPath, stdout).catch(() => {});
@@ -99,6 +152,24 @@ try {
     await rm(tempRoot, { recursive: true, force: true });
   } else {
     console.log(`Kept live E2E temp folder: ${tempRoot}`);
+  }
+}
+
+async function readProductionSettingsHash() {
+  const { createHash } = await import("node:crypto");
+  const { readFile: rf } = await import("node:fs/promises");
+  try {
+    const productionSettingsPath = join(
+      process.env.APPDATA,
+      "GeorgeFejer",
+      "ChatGPT Local MCP Launcher",
+      "config",
+      "settings.json",
+    );
+    const content = await rf(productionSettingsPath);
+    return createHash("sha256").update(content).digest("hex");
+  } catch {
+    return "file-not-found";
   }
 }
 
@@ -119,36 +190,31 @@ function findReleaseExecutable(runtimeRoot) {
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
-function applyIsolatedProfileEnv(env, profileRoot) {
-  if (process.platform === "win32") {
-    env.APPDATA = join(profileRoot, "AppData", "Roaming");
-    env.LOCALAPPDATA = join(profileRoot, "AppData", "Local");
-    return;
-  }
-  env.HOME = join(profileRoot, "home");
-}
-
 async function verifyDisabledZrokPackagedLaunch() {
   const disabledTempRoot = await mkdtemp(join(tmpdir(), "secret-tunnel-disabled-zrok-"));
   const disabledWorkspace = join(disabledTempRoot, "workspace");
+  const disabledConfigDir = join(disabledTempRoot, "profile");
   const disabledStatusPath = join(disabledTempRoot, "secret-tunnel.status.json");
+  const disabledLocalPort = "18788";
   let disabledChild = null;
 
   try {
     await mkdir(disabledWorkspace, { recursive: true });
     await writeFile(join(disabledWorkspace, "README.md"), "# Disabled zrok smoke\n");
+    await mkdir(disabledConfigDir, { recursive: true });
 
     const env = {
       ...process.env,
+      SECRET_TUNNEL_CONFIG_DIR: disabledConfigDir,
       SECRET_TUNNEL_WORKSPACE_PATH: disabledWorkspace,
       SECRET_TUNNEL_ACCESS_MODE: "read",
       SECRET_TUNNEL_ZROK_NAME: `st${randomUUID().replaceAll("-", "").slice(0, 20)}`,
       SECRET_TUNNEL_PUBLIC_PATH_TOKEN: randomUUID().replaceAll("-", ""),
       SECRET_TUNNEL_STATUS_FILE: disabledStatusPath,
+      SECRET_TUNNEL_LOCAL_PORT: disabledLocalPort,
     };
     delete env.SECRET_TUNNEL_ZROK_ENABLE_TOKEN;
     delete env.ZROK_ENABLE_TOKEN;
-    applyIsolatedProfileEnv(env, join(disabledTempRoot, "profile"));
 
     disabledChild = spawn(appPath, ["--background"], {
       cwd: dirname(appPath),
@@ -200,7 +266,7 @@ async function waitForLocalHealth(exitCheck) {
   while (Date.now() < deadline) {
     exitCheck();
     try {
-      const response = await fetch("http://127.0.0.1:8787/health");
+      const response = await fetch(`http://127.0.0.1:${localPort}/health`);
       const body = await response.json();
       if (response.ok && body?.ok === true && body?.name === "gpt-repo-mcp") return;
       lastError = new Error(`Unexpected local health response: ${response.status}`);

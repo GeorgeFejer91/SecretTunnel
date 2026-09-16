@@ -7,4 +7,7 @@ outputs/installers/*.AppImage
 outputs/installers/*.deb
 outputs/installers/*.rpm
 
+# Local backup of real production configuration (contains secrets).
+.local-backup/
+
 # The app/ subtree carries its own .gitignore for node_modules, dist, target, etc.
