@@ -10,7 +10,6 @@ use tauri_plugin_autostart::ManagerExt;
 
 #[tauri::command]
 pub fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<StatusDto, AppError> {
-    state.request_autostart_if_configured()?;
     state.snapshot(autostart_enabled(&app))
 }
 

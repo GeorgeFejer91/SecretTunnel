@@ -20,6 +20,16 @@ impl LifecycleState {
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Running)
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::CleanupFailed => "cleanup-failed",
+        }
+    }
 }
 
 /// A superseding lifecycle request. Workers use the immutable settings snapshot
@@ -37,6 +47,18 @@ pub enum LifecycleRequest {
     },
     Stop,
     Shutdown,
+}
+
+/// Generation-checked status publication observer. Invoked only for the
+/// winning generation, so external artifacts (status files, UI channels) are
+/// never written by a superseded worker.
+pub trait PublishHook: Send + Sync {
+    fn published(
+        &self,
+        attempt: &Attempt,
+        effective: LifecycleState,
+        failure: Option<(String, String)>,
+    );
 }
 
 /// Per-attempt ownership: every child and remote resource created during one
@@ -120,7 +142,9 @@ pub enum AttemptOutcome {
     Stopped,
     /// Startup failed after this attempt; a cleanup pass ran, with no
     /// confirmed leftovers.
-    FailedToStart,
+    FailedToStart {
+        error: Option<AppError>,
+    },
     /// Initial cleanup could not be confirmed; replacement startup is blocked.
     CleanupFailed {
         details: String,
@@ -165,6 +189,8 @@ pub struct Coordinator {
     execution: Arc<Mutex<()>>,
     /// Readiness probes run on their own scheduler and are invalidated here.
     readiness: Mutex<Option<Arc<dyn ReadinessController>>>,
+    /// External status publication, observed only for the winning generation.
+    publish_hook: Mutex<Option<Arc<dyn PublishHook>>>,
 }
 
 impl Coordinator {
@@ -182,6 +208,7 @@ impl Coordinator {
             })),
             execution: Arc::new(Mutex::new(())),
             readiness: Mutex::new(None),
+            publish_hook: Mutex::new(None),
         }
     }
 
@@ -193,6 +220,26 @@ impl Coordinator {
             Err(poisoned) => {
                 *poisoned.into_inner() = Some(controller);
             }
+        }
+    }
+
+    /// Register the external publication observer (status file, UI channel).
+    /// The hook is only invoked when this attempt is the winning generation.
+    pub fn attach_publish_hook(&self, hook: Arc<dyn PublishHook>) {
+        match self.publish_hook.lock() {
+            Ok(mut slot) => {
+                *slot = Some(hook);
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = Some(hook);
+            }
+        }
+    }
+
+    fn publish_hook(&self) -> Option<Arc<dyn PublishHook>> {
+        match self.publish_hook.lock() {
+            Ok(guarded) => guarded.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
         }
     }
 
@@ -215,7 +262,10 @@ impl Coordinator {
     /// Submit a request. Admission is short and non-blocking on execution; it
     /// records intent, invalidates the previous generation, and returns after
     /// launching a worker if actual work is required.
-    pub fn submit(&self, request: LifecycleRequest) {
+    ///
+    /// Returns `0` when no worker was spawned (coalesced/rejected/blocked) and
+    /// the generation of the spawned worker otherwise.
+    pub fn submit(&self, request: LifecycleRequest) -> u64 {
         let admission = {
             let mut state = match self.state.lock() {
                 Ok(state) => state,
@@ -230,10 +280,36 @@ impl Coordinator {
             let execution = self.execution.clone();
             let endpoint = self.endpoint.clone();
             let readiness = self.readiness_handle();
+            let publish_hook = self.publish_hook();
+            let generation = attempt.generation;
             thread::spawn(move || {
-                run_worker(execution, endpoint, attempt, request, state, readiness);
+                run_worker(execution, endpoint, attempt, request, state, readiness, publish_hook);
             });
+            generation
+        } else {
+            0
         }
+    }
+
+    /// Wait until the given generation has finished publishing (it is no
+    /// longer in flight), or until `deadline` elapses. Returns the last known
+    /// effective state.
+    pub fn wait_for_generation(&self, generation: u64, deadline: Duration) -> LifecycleState {
+        let started = std::time::Instant::now();
+        loop {
+            let in_flight = match self.state.lock() {
+                Ok(state) => state.in_flight_generation,
+                Err(poisoned) => poisoned.into_inner().in_flight_generation,
+            };
+            if in_flight != Some(generation) {
+                break;
+            }
+            if started.elapsed() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        self.effective_state()
     }
 
     fn admit(&self, state: &mut CoordinatorState, request: LifecycleRequest) -> Admission {
@@ -245,6 +321,12 @@ impl Coordinator {
             } => {
                 if *retry && !state.desired_running {
                     // A retry must never undo an explicit Stop.
+                    return Admission::Handled;
+                }
+                if state.blocked.is_some() {
+                    // Cleanup is unresolved: placeholder startup is rejected
+                    // without toggling desired_running, so a later Reconfigure
+                    // cannot bypass the block either.
                     return Admission::Handled;
                 }
                 let same_snapshot = state
@@ -260,16 +342,13 @@ impl Coordinator {
                     // Equivalent start already in flight; coalesce.
                     return Admission::Handled;
                 }
-                if !*retry {
-                    state.desired_running = true;
-                }
-                if state.blocked.is_some() {
-                    return Admission::Handled;
-                }
-                if state.in_flight_generation.is_none() && same_snapshot && state.desired_running {
+                if state.in_flight_generation.is_none() && same_snapshot {
                     if state.effective.is_running() {
                         return Admission::Handled;
                     }
+                }
+                if !*retry {
+                    state.desired_running = true;
                 }
                 self.supercede(state, &request)
             }
@@ -277,13 +356,14 @@ impl Coordinator {
                 settings: _,
                 revision: _,
             } => {
+                if state.blocked.is_some() {
+                    // Reconfiguration must not bypass an unconfirmed cleanup
+                    // block: only a Stop that confirms cleanup clears it.
+                    return Admission::Handled;
+                }
                 if !state.desired_running {
                     // Reconfigure of a stopped profile defers to an explicit
                     // start later; nothing to restart.
-                    let blocked = state.blocked.take();
-                    if blocked.is_some() {
-                        state.blocked = blocked;
-                    }
                     return Admission::Handled;
                 }
                 state.desired_running = true;
@@ -311,7 +391,12 @@ impl Coordinator {
             cancel.store(true, Ordering::SeqCst);
         }
         state.in_flight_generation = Some(generation);
-        let previous_blocked = state.blocked.take();
+        // Readiness from the previous generation is stale the moment a
+        // superseding request is accepted. Invalidate at admission, not later
+        // when the worker happens to obtain the execution lock.
+        if let Some(readiness) = self.readiness_handle() {
+            readiness.invalidate();
+        }
         let share = match request {
             LifecycleRequest::Start {
                 settings,
@@ -327,8 +412,9 @@ impl Coordinator {
         if let Some((settings, revision)) = share {
             state.coalesce_key = Some((settings, revision));
         }
-        // CleanupFailed blocks replacement startup: keep the block until a Stop
-        // confirmed cleanup.
+        // CleanupFailed blocks replacement startup: the block persists until a
+        // Stop confirms cleanup (only publish(Stopped) clears it). Nothing here
+        // removes it.
         let cancel = Arc::new(AtomicBool::new(false));
         let attempt = Arc::new(Attempt {
             generation,
@@ -339,7 +425,6 @@ impl Coordinator {
             share_tokens: Mutex::new(HashSet::new()),
         });
         state.in_flight_cancel = Some(cancel);
-        let _ = previous_blocked;
         let is_stop = matches!(request, LifecycleRequest::Stop | LifecycleRequest::Shutdown);
         if is_stop {
             state
@@ -355,11 +440,6 @@ impl Coordinator {
             attempt,
             request: request.clone(),
         }
-    }
-
-    fn spawn_worker(&self, _attempt: Arc<Attempt>, _request: LifecycleRequest) {
-        // Worker is spawned by `submit`; this indirection keeps ownership of
-        // the clones in one place.
     }
 
     pub fn desired_running(&self) -> bool {
@@ -388,6 +468,32 @@ impl Coordinator {
             Ok(state) => state.blocked.clone(),
             Err(poisoned) => poisoned.into_inner().blocked.clone(),
         }
+    }
+
+    /// The generation currently being executed, if any.
+    pub fn in_flight_generation(&self) -> Option<u64> {
+        match self.state.lock() {
+            Ok(state) => state.in_flight_generation,
+            Err(poisoned) => poisoned.into_inner().in_flight_generation,
+        }
+    }
+
+    /// Wait until no worker is in flight (or until the deadline), returning
+    /// the last known effective state. Used when a request was coalesced and
+    /// the caller should wait for the winning worker instead.
+    pub fn wait_for_idle(&self, deadline: Duration) -> LifecycleState {
+        let started = std::time::Instant::now();
+        loop {
+            let in_flight = self.in_flight_generation();
+            if in_flight.is_none() {
+                break;
+            }
+            if started.elapsed() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        self.effective_state()
     }
 }
 
@@ -431,9 +537,11 @@ fn run_worker(
     request: LifecycleRequest,
     state: Arc<Mutex<CoordinatorState>>,
     readiness: Option<Arc<dyn ReadinessController>>,
+    publish_hook: Option<Arc<dyn PublishHook>>,
 ) {
+    let hook = &publish_hook;
     if attempt.is_cancelled() {
-        publish(&state, &attempt, Some(LifecycleState::Stopped), None);
+        publish(&state, &attempt, Some(LifecycleState::Stopped), None, None, hook);
         return;
     }
     let guard = match execution.lock() {
@@ -445,7 +553,7 @@ fn run_worker(
     // Re-check cancellation after acquiring the execution lock and before any
     // side effect, so a superseded worker never touches services.
     if attempt.is_cancelled() {
-        publish(&state, &attempt, Some(LifecycleState::Stopped), None);
+        publish(&state, &attempt, Some(LifecycleState::Stopped), None, None, hook);
         return;
     }
 
@@ -464,9 +572,25 @@ fn run_worker(
                 AttemptOutcome::Running
             }
             Err(error) => {
-                let _ = error;
-                let _ = endpoint.stop_services(&attempt);
-                AttemptOutcome::FailedToStart
+                // Startup failed: run cleanup ourselves so the caller cannot
+                // discard the cleanup outcome. Only a confirmed cleanup reports
+                // FailedToStart; unconfirmed leftovers block replacements.
+                let confirmed = match endpoint.stop_services(&attempt) {
+                    Ok(confirmed) => confirmed,
+                    Err(_) => false,
+                };
+                if confirmed {
+                    AttemptOutcome::FailedToStart {
+                        error: Some(error),
+                    }
+                } else {
+                    AttemptOutcome::CleanupFailed {
+                        details: format!(
+                            "Start failed ({}), and cleanup could not be confirmed.",
+                            error.code
+                        ),
+                    }
+                }
             }
         },
         LifecycleRequest::Stop | LifecycleRequest::Shutdown => {
@@ -489,19 +613,22 @@ fn run_worker(
 
     match outcome {
         AttemptOutcome::Running => {
-            publish(&state, &attempt, Some(LifecycleState::Running), None)
+            publish(&state, &attempt, Some(LifecycleState::Running), None, None, &hook)
         }
         AttemptOutcome::Stopped => {
-            publish(&state, &attempt, Some(LifecycleState::Stopped), None)
+            publish(&state, &attempt, Some(LifecycleState::Stopped), None, None, &hook)
         }
-        AttemptOutcome::FailedToStart => {
-            publish(&state, &attempt, Some(LifecycleState::Stopped), None)
+        AttemptOutcome::FailedToStart { error } => {
+            let failure = error.map(|error| (error.message.clone(), error.code.to_string()));
+            publish(&state, &attempt, Some(LifecycleState::Stopped), None, failure, &hook)
         }
         AttemptOutcome::CleanupFailed { details } => publish(
             &state,
             &attempt,
             Some(LifecycleState::CleanupFailed),
             Some(details),
+            None,
+            &hook,
         ),
     }
 }
@@ -511,6 +638,8 @@ fn publish(
     attempt: &Attempt,
     effective: Option<LifecycleState>,
     cleanup_failure: Option<String>,
+    hook_failure: Option<(String, String)>,
+    hook: &Option<Arc<dyn PublishHook>>,
 ) {
     let mut state = match state.lock() {
         Ok(state) => state,
@@ -533,6 +662,19 @@ fn publish(
         state.blocked = Some(details);
     } else if effective != Some(LifecycleState::CleanupFailed) {
         state.blocked = None;
+    }
+    // External observers only see the winning generation's publication.
+    if let Some(ref hook) = hook {
+        let failure = hook_failure.or_else(|| {
+            state.blocked.as_ref().map(|d| {
+                let code = match state.effective {
+                    LifecycleState::CleanupFailed => "cleanup-failed",
+                    _ => "unknown",
+                };
+                (d.clone(), code.to_string())
+            })
+        });
+        hook.published(attempt, state.effective, failure);
     }
 }
 

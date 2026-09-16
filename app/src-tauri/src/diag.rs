@@ -77,10 +77,10 @@ pub fn executable_fingerprint() -> String {
     let Ok(bytes) = fs::read(&exe) else {
         return "unknown".to_string();
     };
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(&bytes);
+    let hex = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    hex.chars().take(12).collect()
 }
 
 /// Log the bootstrap event: build identity, PID, executable path, and

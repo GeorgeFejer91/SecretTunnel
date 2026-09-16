@@ -26,6 +26,7 @@ rfd = "0.17.2"
 directories = "6.0.0"
 uuid = { version = "1.26.1", features = ["v4"] }
 fs4 = "0.13.1"
+sha2 = "0.11.0"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

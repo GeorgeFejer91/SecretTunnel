@@ -1,5 +1,6 @@
 mod commands;
 mod diag;
+mod download_helper;
 mod error;
 mod lifecycle;
 mod ownership;
@@ -101,6 +102,9 @@ pub fn run() {
                     if let Err(error) = state.enable_zrok_from_environment_if_present() {
                         state.push_app_log(format!("zrok auto-enable failed: {}", error.message));
                     }
+                    // Backend supervisor schedules retries while desired_running
+                    // is true; it is NOT driven by webview status polling.
+                    state.start_supervisor();
                     let _ = state.start_if_configured();
                 }
             });
