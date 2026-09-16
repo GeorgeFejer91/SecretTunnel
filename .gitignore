@@ -1,0 +1,10 @@
+# Release installers are large (hundreds of MB) and exceed GitHub's per-file limit.
+# They exist locally for use/installation and are distributed as GitHub Release assets.
+outputs/installers/*.msi
+outputs/installers/*.exe
+outputs/installers/*.dmg
+outputs/installers/*.AppImage
+outputs/installers/*.deb
+outputs/installers/*.rpm
+
+# The app/ subtree carries its own .gitignore for node_modules, dist, target, etc.

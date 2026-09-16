@@ -1,0 +1,2 @@
+a0df4728a4fa4669d4864bd71cc3ac6c546bc90cc21f9a75e605c7c7c427c53c  msi/Secret Tunnel_0.1.0_x64_en-US.msi
+cb19c247c0c1474f451ebc5ffba686b39ff96c065369f25fa560224fcac2d41d  nsis/Secret Tunnel_0.1.0_x64-setup.exe

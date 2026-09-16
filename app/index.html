@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Secret Tunnel</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+
+  <body>
+    <main class="shell">
+      <section class="row topbar">
+        <div class="brand">
+          <div class="tunnel-mark" aria-hidden="true">
+            <span class="tunnel-ring ring-one"></span>
+            <span class="tunnel-ring ring-two"></span>
+            <span class="tunnel-ring ring-three"></span>
+            <span class="tunnel-glow glow-one"></span>
+            <span class="tunnel-glow glow-two"></span>
+          </div>
+          <div>
+            <h1>Secret Tunnel</h1>
+            <p id="status-line">Loading</p>
+          </div>
+        </div>
+        <button id="toggle-services" type="button">Start</button>
+      </section>
+
+      <section class="section">
+        <label for="mcp-url">Permanent MCP address</label>
+        <div class="copy-row">
+          <input id="mcp-url" readonly spellcheck="false" />
+          <button id="copy-url" type="button">Copy</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <button id="folder-picker" class="folder-button" type="button">
+          Select access folder
+        </button>
+        <label for="folder-path">Selected folder</label>
+        <input id="folder-path" spellcheck="false" placeholder="No folder selected" />
+        <div class="button-row">
+          <button id="paste-folder" type="button">Paste</button>
+          <button id="copy-folder" type="button">Copy</button>
+          <button id="save-folder" type="button">Use path</button>
+        </div>
+      </section>
+
+      <section class="section controls">
+        <label class="check">
+          <input id="autostart" type="checkbox" />
+          <span>Open app at startup</span>
+        </label>
+        <div class="mode-control">
+          <span id="access-mode-label" class="control-label">GPT tools</span>
+          <div class="segmented" role="group" aria-labelledby="access-mode-label">
+            <button id="mode-read" class="segment" type="button" aria-pressed="true">Read</button>
+            <button id="mode-write" class="segment" type="button" aria-pressed="false">Read+write</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="notice">
+        Keep this app open while ChatGPT uses the MCP. Only expose a project folder you are comfortable making reachable through the public tunnel. Do not select a drive root, home folder, or system folder.
+      </section>
+
+      <section class="section diagnostics">
+        <div class="diag-row">
+          <span>zrok2</span>
+          <strong id="zrok-state">Checking</strong>
+        </div>
+        <div class="diag-row">
+          <span>gpt-repo-mcp</span>
+          <strong id="mcp-state">Checking</strong>
+        </div>
+        <pre id="logs" aria-live="polite"></pre>
+      </section>
+    </main>
+  </body>
+</html>

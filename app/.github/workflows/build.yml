@@ -1,0 +1,68 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            artifact: windows
+          - name: macOS
+            os: macos-latest
+            artifact: macos
+          - name: Linux
+            os: ubuntu-22.04
+            artifact: linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Rust checks
+        working-directory: src-tauri
+        run: |
+          cargo fmt --all -- --check
+          cargo check
+          cargo test
+
+      - run: npm run tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-mcp-launcher-${{ matrix.artifact }}
+          path: src-tauri/target/release/bundle/**/*
+          if-no-files-found: error
