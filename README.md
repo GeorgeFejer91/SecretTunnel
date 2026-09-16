@@ -3,6 +3,16 @@
 A tiny Tauri desktop app that keeps one local `gpt-repo-mcp` folder share available to
 ChatGPT through a stable zrok URL.
 
+## Licence
+
+Secret Tunnel is released under the [MIT Licence](LICENSE).
+
+It redistributes third-party components that keep their own licences — notably
+[gpt-repo-mcp](https://github.com/CAHN91/gpt-repo-mcp) (MIT, Promptiva AB),
+[zrok](https://github.com/openziti/zrok) (Apache-2.0) and
+[Node.js](https://nodejs.org/) (MIT). See
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
 ## Credits
 
 The idea, and the component that does the actual work, come from
