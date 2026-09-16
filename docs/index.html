@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Secret Tunnel — give ChatGPT one folder on your computer</title>
+    <meta
+      name="description"
+      content="A small desktop app that lets ChatGPT read, and optionally edit, one folder on your machine through a stable private URL."
+    />
+    <style>
+      :root {
+        --bg: #0d1117;
+        --panel: #111827;
+        --line: #273241;
+        --text: #f8fafc;
+        --muted: #cbd5e1;
+        --dim: #94a3b8;
+        --accent: #14b8a6;
+        --accent-deep: #0f766e;
+        --ok: #34d399;
+        --warn: #fbbf24;
+        --bad: #f87171;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px 72px; }
+      header { padding: 56px 0 8px; text-align: center; }
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(32px, 6vw, 48px);
+        letter-spacing: 0.06em;
+        background: linear-gradient(90deg, #f97316, #14b8a6 40%, #38bdf8);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .tagline { margin: 0; color: var(--muted); font-size: 18px; }
+      .lede { margin: 28px auto 0; max-width: 660px; color: var(--muted); text-align: center; }
+      h2 { margin: 44px 0 12px; font-size: 20px; }
+      h3 { margin: 26px 0 6px; font-size: 15px; color: #5eead4; }
+      p { color: var(--muted); }
+      a { color: #5eead4; }
+      code {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: #0b1220;
+        color: #7dd3fc;
+        font-size: 13px;
+      }
+      .downloads {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 12px;
+        margin-top: 28px;
+      }
+      .dl {
+        display: block;
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        color: var(--text);
+        text-decoration: none;
+        transition: border-color 120ms ease, transform 120ms ease;
+      }
+      .dl:hover { border-color: var(--accent); transform: translateY(-2px); }
+      .dl .os { font-size: 17px; font-weight: 700; }
+      .dl .file { margin-top: 4px; color: var(--dim); font-size: 13px; }
+      .dl.primary { border-color: var(--accent-deep); background: #0c2321; }
+      .badge {
+        display: inline-block;
+        margin-left: 8px;
+        padding: 1px 7px;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 700;
+        vertical-align: middle;
+      }
+      .badge.ok { background: #064e3b; color: var(--ok); }
+      .badge.beta { background: #422006; color: var(--warn); }
+      .note {
+        margin: 18px 0;
+        padding: 12px 14px;
+        border: 1px solid #b45309;
+        border-radius: 9px;
+        background: #1f1308;
+        color: #fed7aa;
+        font-size: 14px;
+      }
+      .note.plain { border-color: var(--line); background: var(--panel); color: var(--muted); }
+      ol, ul { color: var(--muted); padding-left: 22px; }
+      li { margin-bottom: 6px; }
+      .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+      .card { padding: 16px 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+      .card h3 { margin-top: 0; }
+      footer {
+        margin-top: 56px;
+        padding-top: 22px;
+        border-top: 1px solid var(--line);
+        color: var(--dim);
+        font-size: 14px;
+      }
+      table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 14px; }
+      th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; color: var(--muted); }
+      th { color: var(--text); font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>SECRET TUNNEL</h1>
+        <p class="tagline">Give ChatGPT one folder on your computer.</p>
+      </header>
+
+      <p class="lede">
+        ChatGPT runs in a datacentre and cannot reach your machine. Secret Tunnel runs a small file
+        server locally and gives it a stable private HTTPS address, so ChatGPT can read — and if you
+        allow it, edit — the files in a single folder you choose. Nothing is uploaded in advance.
+      </p>
+
+      <h2>Download</h2>
+      <div class="downloads">
+        <a
+          class="dl primary"
+          href="https://github.com/GeorgeFejer91/SecretTunnel/releases/latest/download/SecretTunnel-windows-x64-setup.exe"
+        >
+          <div class="os">Windows<span class="badge ok">tested</span></div>
+          <div class="file">64-bit installer (.exe)</div>
+        </a>
+        <a
+          class="dl"
+          href="https://github.com/GeorgeFejer91/SecretTunnel/releases/latest/download/SecretTunnel-macos-arm64.dmg"
+        >
+          <div class="os">macOS · Apple Silicon<span class="badge beta">beta</span></div>
+          <div class="file">M1 and newer (.dmg)</div>
+        </a>
+        <a
+          class="dl"
+          href="https://github.com/GeorgeFejer91/SecretTunnel/releases/latest/download/SecretTunnel-macos-x64.dmg"
+        >
+          <div class="os">macOS · Intel<span class="badge beta">beta</span></div>
+          <div class="file">Intel Macs (.dmg)</div>
+        </a>
+      </div>
+      <p style="margin-top: 14px; font-size: 14px">
+        All releases, checksums and source:
+        <a href="https://github.com/GeorgeFejer91/SecretTunnel/releases/latest">releases page</a> ·
+        <a href="https://github.com/GeorgeFejer91/SecretTunnel">source code</a>. Every release ships a
+        <code>SHA256SUMS.txt</code> so you can verify what you downloaded.
+      </p>
+
+      <div class="note">
+        <strong>These builds are not code-signed.</strong> Windows SmartScreen will say "unrecognised
+        app" — choose <em>More info → Run anyway</em>. macOS Gatekeeper will refuse a double-click —
+        right-click the app and choose <em>Open</em>. Only do this because you trust this page; that
+        warning exists for good reason. The macOS builds are marked beta because they are built
+        automatically but have not been exercised as thoroughly as the Windows build.
+      </div>
+
+      <h2>What you need first</h2>
+      <ul>
+        <li>A <strong>free <a href="https://myzrok.io">zrok</a> account</strong>, for the tunnel. One token, entered once.</li>
+        <li>
+          A ChatGPT plan that offers <strong>custom MCP connectors</strong> (developer mode). This is
+          not available on the free tier.
+        </li>
+      </ul>
+
+      <h2>Setting it up</h2>
+      <div class="steps">
+        <div class="card">
+          <h3>1. Enable the tunnel</h3>
+          <ol>
+            <li>Create a free account at <a href="https://myzrok.io">myzrok.io</a>.</li>
+            <li>Copy your <strong>enable token</strong>.</li>
+            <li>Paste it into the app and press <strong>Enable</strong>.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>2. Pick a folder</h3>
+          <ol>
+            <li>Press <strong>Select access folder</strong>.</li>
+            <li>Choose a project folder — never a drive root, home folder or system folder.</li>
+            <li>Choose <strong>Read</strong>, or <strong>Read+write</strong> to allow edits.</li>
+          </ol>
+        </div>
+        <div class="card">
+          <h3>3. Wait for green</h3>
+          <p style="margin: 0">
+            <strong>ChatGPT can reach it</strong> must say <span style="color: var(--ok)">Connected</span>.
+            That means a real handshake succeeded through the public address — not merely that a
+            process started. If it is red, the app tells you why.
+          </p>
+        </div>
+        <div class="card">
+          <h3>4. Add it to ChatGPT</h3>
+          <ol>
+            <li>Copy the <strong>MCP Address</strong> from the app.</li>
+            <li>In ChatGPT: <strong>Plugins → New Plugin</strong>.</li>
+            <li>Connection: <strong>Server URL</strong>, paste the address.</li>
+            <li>Authentication: <strong>No Auth</strong>.</li>
+            <li>Accept the warning, then <strong>Create</strong>.</li>
+          </ol>
+        </div>
+      </div>
+
+      <h2>Before you share it around</h2>
+      <table>
+        <tr>
+          <th>What</th>
+          <th>What it means for you</th>
+        </tr>
+        <tr>
+          <td>The address is the password</td>
+          <td>
+            Anyone holding the full URL can read that folder, and write to it in Read+write mode.
+            Do not paste it anywhere public.
+          </td>
+        </tr>
+        <tr>
+          <td>Only one folder is exposed</td>
+          <td>Nothing above or outside your chosen folder is offered, in either mode.</td>
+        </tr>
+        <tr>
+          <td>Closing the app closes the tunnel</td>
+          <td>The address stops working until you open it again. Keep it open while ChatGPT works.</td>
+        </tr>
+        <tr>
+          <td>You can rotate the address</td>
+          <td>The refresh button issues a new one and immediately invalidates the old.</td>
+        </tr>
+        <tr>
+          <td>Switching folders keeps the address</td>
+          <td>Point it at another project without re-adding the connector in ChatGPT.</td>
+        </tr>
+      </table>
+
+      <footer>
+        <p>
+          <strong>Credits.</strong> The idea, and the server that does the real work, come from
+          <a href="https://github.com/CAHN91/gpt-repo-mcp">gpt-repo-mcp</a> by Promptiva AB, used
+          under the MIT licence. Secret Tunnel is the launcher and tunnel around it. The tunnel is
+          provided by <a href="https://zrok.io/">zrok</a>, built on
+          <a href="https://openziti.io/">OpenZiti</a> by NetFoundry. The app bundles
+          <a href="https://nodejs.org/">Node.js</a> to run the server.
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>

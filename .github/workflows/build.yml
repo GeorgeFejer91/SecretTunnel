@@ -122,12 +122,29 @@ jobs:
 
       # Only the installer formats are published; the loose `bundle/` tree also
       # contains the unpacked app directories, which are not useful downloads.
+      #
+      # Assets are renamed to stable, version-free names so the download page can
+      # link to /releases/latest/download/<name> and keep working across releases.
+      # Tauri's own names carry the version and a space, which would break those
+      # links on every bump.
       - name: Collect installers
         working-directory: .
         run: |
+          set -euo pipefail
           mkdir -p release
-          find artifacts -type f \( -name '*-setup.exe' -o -name '*.msi' -o -name '*.dmg' \) \
-            -exec cp {} release/ \;
+          for dir in artifacts/secret-tunnel-*; do
+            [ -d "$dir" ] || continue
+            slug="$(basename "$dir")"
+            slug="${slug#secret-tunnel-}"
+            find "$dir" -type f \( -name '*-setup.exe' -o -name '*.msi' -o -name '*.dmg' \) |
+              while IFS= read -r file; do
+                case "$file" in
+                  *-setup.exe) cp "$file" "release/SecretTunnel-${slug}-setup.exe" ;;
+                  *.msi)       cp "$file" "release/SecretTunnel-${slug}.msi" ;;
+                  *.dmg)       cp "$file" "release/SecretTunnel-${slug}.dmg" ;;
+                esac
+              done
+          done
           ls -l release
           test -n "$(ls -A release)" || { echo "no installers were produced"; exit 1; }
           (cd release && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt)
