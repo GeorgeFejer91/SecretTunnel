@@ -45,10 +45,14 @@ fn canonical_config_dir(config_dir: &Path) -> Result<PathBuf, AppError> {
 
 pub struct ProfileLock {
     file: File,
+    /// Written at acquisition so a future owner can report who holds the lock.
+    /// Nothing reads it back yet.
+    #[allow(dead_code)]
     meta_path: PathBuf,
 }
 
 impl ProfileLock {
+    #[allow(dead_code)]
     pub fn meta_path(&self) -> &Path {
         &self.meta_path
     }
@@ -56,7 +60,9 @@ impl ProfileLock {
 
 pub enum LockState {
     Acquired(ProfileLock),
-    HeldElsewhere(OwnerMetadata),
+    /// Carries the existing owner's metadata. The launcher currently only
+    /// matches on the variant, so the payload is not read.
+    HeldElsewhere(#[allow(dead_code)] OwnerMetadata),
 }
 
 /// Acquire an OS-backed exclusive lock scoped to the canonical configuration

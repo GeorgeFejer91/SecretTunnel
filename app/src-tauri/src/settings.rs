@@ -650,19 +650,6 @@ mod tests {
         }
     }
 
-    fn test_paths() -> AppPaths {
-        let root = env::temp_dir().join(format!(
-            "secret-tunnel-settings-test-{}",
-            std::process::id()
-        ));
-        AppPaths {
-            config_dir: root.clone(),
-            settings_path: root.join("settings.json"),
-            managed_config_path: root.join("gpt-repo-mcp.config.json"),
-            diagnostics_path: root.join("diagnostics.log"),
-        }
-    }
-
     #[test]
     fn validates_zrok_names() {
         assert_eq!(validate_zrok_name("My-Mcp1").unwrap(), "my-mcp1");

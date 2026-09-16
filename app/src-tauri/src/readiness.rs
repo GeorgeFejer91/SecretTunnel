@@ -103,6 +103,11 @@ impl ReadinessSnapshot {
 
     /// Ready for local MCP use: the server process is alive and both the HTTP
     /// endpoint and the MCP protocol handshake verify on the loopback URL.
+    ///
+    /// These three are the authoritative definition of readiness. The frontend
+    /// currently evaluates the same gates itself, which is why nothing in Rust
+    /// calls them; they stay as the reference the UI must agree with.
+    #[allow(dead_code)]
     pub fn is_local_ready(&self) -> bool {
         self.local_process.status != ProbeStatus::Pending
             && self.local_process.status != ProbeStatus::Failed
@@ -112,6 +117,7 @@ impl ReadinessSnapshot {
 
     /// Ready through the public tunnel: both the tunnel reachability and the
     /// public MCP handshake must verify.
+    #[allow(dead_code)]
     pub fn is_public_ready(&self) -> bool {
         self.public_tunnel.status == ProbeStatus::Verified
             && self.public_protocol.status == ProbeStatus::Verified
@@ -119,6 +125,7 @@ impl ReadinessSnapshot {
 
     /// Fully ready: local and public gates all verified. A readiness claim for
     /// ChatGPT requires the public path; local-only verification is not enough.
+    #[allow(dead_code)]
     pub fn is_ready(&self) -> bool {
         !self.degraded && self.is_local_ready() && self.is_public_ready()
     }
@@ -160,7 +167,11 @@ pub struct ProbeContext {
     pub public_url: Option<String>,
     /// Public MCP protocol endpoint.
     pub public_mcp_url: Option<String>,
+    /// The probe closure captures its own copies of these, so a probe built
+    /// from a context alone still has everything it needs.
+    #[allow(dead_code)]
     pub probe_script_path: PathBuf,
+    #[allow(dead_code)]
     pub bundled_node: PathBuf,
 }
 
@@ -365,18 +376,21 @@ struct GatewayReport {
     detail: Option<String>,
 }
 
+/// The probe script emits camelCase gate names; serde renames them rather than
+/// the fields carrying non-idiomatic names into Rust.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ProbeReport {
     #[serde(default)]
-    localProcess: Option<GatewayReport>,
+    local_process: Option<GatewayReport>,
     #[serde(default)]
-    localEndpoint: Option<GatewayReport>,
+    local_endpoint: Option<GatewayReport>,
     #[serde(default)]
-    localProtocol: Option<GatewayReport>,
+    local_protocol: Option<GatewayReport>,
     #[serde(default)]
-    publicTunnel: Option<GatewayReport>,
+    public_tunnel: Option<GatewayReport>,
     #[serde(default)]
-    publicProtocol: Option<GatewayReport>,
+    public_protocol: Option<GatewayReport>,
 }
 
 /// The production probe: runs the bundled `readiness-probe.mjs` through the
@@ -386,7 +400,7 @@ struct ProbeReport {
 pub fn real_probe_fn(probe_script_path: PathBuf, bundled_node: PathBuf) -> ProbeFn {
     Arc::new(
         move |context: &ProbeContext, _prior: &ReadinessSnapshot| -> ReadinessSnapshot {
-            let mut snapshot = ReadinessSnapshot::pending();
+            let snapshot = ReadinessSnapshot::pending();
             let mut command = Command::new(&bundled_node);
             command
                 .arg(&probe_script_path)
@@ -515,11 +529,11 @@ fn apply_report(mut snapshot: ReadinessSnapshot, stdout: &str) -> ReadinessSnaps
         }
     };
     let gates: [(&mut ProbeEntry, Option<GatewayReport>); 5] = [
-        (&mut snapshot.local_process, report.localProcess),
-        (&mut snapshot.local_endpoint, report.localEndpoint),
-        (&mut snapshot.local_protocol, report.localProtocol),
-        (&mut snapshot.public_tunnel, report.publicTunnel),
-        (&mut snapshot.public_protocol, report.publicProtocol),
+        (&mut snapshot.local_process, report.local_process),
+        (&mut snapshot.local_endpoint, report.local_endpoint),
+        (&mut snapshot.local_protocol, report.local_protocol),
+        (&mut snapshot.public_tunnel, report.public_tunnel),
+        (&mut snapshot.public_protocol, report.public_protocol),
     ];
     for (entry, report) in gates {
         if let Some(report) = report {

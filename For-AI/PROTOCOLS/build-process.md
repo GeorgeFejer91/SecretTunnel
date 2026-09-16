@@ -3,6 +3,10 @@
 All commands are described for **Windows PowerShell**. Use `npm.cmd` (not `npm`) so
 the call works even when the PowerShell execution policy blocks `npm.ps1`.
 
+> **Build slow?** Do not start guessing. [build-performance.md](build-performance.md)
+> records where the time actually goes, measured per step, plus the caching and
+> concurrency already in place and the rules that keep them working.
+
 ## Environment Prerequisites
 
 - Node.js 24 (matches CI)

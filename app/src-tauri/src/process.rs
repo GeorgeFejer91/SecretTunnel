@@ -167,12 +167,24 @@ fn readiness_probe_script_path() -> Option<PathBuf> {
 pub struct AppState {
     pub paths: AppPaths,
     runtime: Arc<Mutex<RuntimeState>>,
+    /// Handed to the ServiceEndpoint and StatusPublisher at construction and
+    /// kept so either can be rebuilt without re-reading the environment.
+    #[allow(dead_code)]
     status_probe_path: Option<PathBuf>,
+    #[allow(dead_code)]
     instance_id: String,
     launch_environment: Option<Settings>,
     diagnostics: Diagnostics,
     coordinator: Arc<Coordinator>,
+    /// Owned so the scheduler outlives any single attempt. Status reads go
+    /// through the coordinator, which is why nothing reads this directly.
+    #[allow(dead_code)]
     readiness: Arc<ReadinessScheduler>,
+    /// RAII guard, deliberately never read: dropping a ProfileLock releases
+    /// the OS-level exclusive lock. Deleting this field because the compiler
+    /// reports it unused would release the per-profile lock while the app is
+    /// running and let a second instance start against the same profile.
+    #[allow(dead_code)]
     profile_lock: Option<Arc<ProfileLock>>,
     activation_watcher: Arc<Mutex<Option<ActivationWatcher>>>,
 }
@@ -551,7 +563,7 @@ impl crate::lifecycle::PublishHook for StatusPublisher {
             crate::lifecycle::LifecycleState::CleanupFailed => "cleanup-failed",
             _ => "transition",
         };
-        let mut runtime = match self.runtime.lock() {
+        let runtime = match self.runtime.lock() {
             Ok(runtime) => runtime,
             Err(poisoned) => poisoned.into_inner(),
         };
@@ -646,7 +658,7 @@ fn write_status_document(
 fn clear_stale_zrok_shares_for(
     zrok_name: String,
     runtime: &Arc<Mutex<RuntimeState>>,
-    paths: &AppPaths,
+    _paths: &AppPaths,
     diagnostics: &Diagnostics,
 ) {
     let owned_tokens: HashSet<String> = match runtime.lock() {
@@ -701,10 +713,14 @@ fn takeover_or_keep_owned_shares(zrok_name: &str, runtime: &Arc<Mutex<RuntimeSta
 }
 
 impl AppState {
+    /// Constructors without a profile lock. The application always takes the
+    /// lock first, so only tests and embedders use these.
+    #[allow(dead_code)]
     pub fn new(paths: AppPaths) -> Self {
         Self::with_launch_environment(paths, None)
     }
 
+    #[allow(dead_code)]
     pub fn with_launch_environment(paths: AppPaths, launch_environment: Option<Settings>) -> Self {
         let diagnostics = Diagnostics::new(&paths);
         diag::bootstrap(&diagnostics, launch_environment.is_some());
@@ -1165,7 +1181,6 @@ struct RuntimeState {
     /// Cached zrok environment status: false by default, refreshed by the
     /// background supervisor so `get_status` never runs a CLI subprocess.
     zrok_enabled_known: bool,
-    last_autostart_attempt: Option<Instant>,
     logs: Vec<LogLine>,
     owned_share_tokens: HashSet<String>,
     known_mcp_pids: HashSet<u32>,
@@ -1987,7 +2002,7 @@ mod tests {
         zrok_status_indicates_enabled,
     };
     #[cfg(windows)]
-    use super::{confirmed_exited, kill_process_tree, process_alive, tasklist_row_matches_pid};
+    use super::{confirmed_exited, kill_process_tree, tasklist_row_matches_pid};
     #[cfg(windows)]
     use std::process::Command;
     use std::sync::Mutex;

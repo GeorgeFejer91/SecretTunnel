@@ -70,9 +70,16 @@ pub struct Attempt {
     pub revision: u64,
     cancel: Arc<AtomicBool>,
     children: Mutex<HashSet<u32>>,
+    #[allow(dead_code)]
     share_tokens: Mutex<HashSet<String>>,
 }
 
+// Part of the lifecycle ownership API that the production start path does not
+// reach yet: AppState still calls the endpoint directly instead of routing
+// every transition through the coordinator. Kept rather than deleted because
+// the design is the intended destination and the tests exercise it; the
+// warnings are suppressed here so they cannot drown out a genuinely new one.
+#[allow(dead_code)]
 impl Attempt {
     pub fn new(generation: u64, settings: Settings, revision: u64) -> Self {
         Self {
@@ -502,6 +509,9 @@ impl Coordinator {
 /// A readiness scheduler attached to the coordinator. It is invalidated on
 /// stop/reconfigure and must never resurrect readiness from a stale generation.
 pub trait ReadinessController: Send + Sync {
+    /// Implemented and tested, but the app reads readiness through the
+    /// coordinator rather than asking the scheduler for its generation.
+    #[allow(dead_code)]
     fn generation(&self) -> u64;
     fn schedule_for(&self, attempt: &Attempt);
     fn invalidate(&self);
@@ -703,13 +713,6 @@ fn publish(
         });
         hook.published(attempt, state.effective, failure);
     }
-}
-
-/// Bounded wait helper used by endpoints for subprocess/network deadlines.
-pub const PROBE_DEADLINE: Duration = Duration::from_secs(20);
-
-pub fn should_abort(attempt: &Attempt) -> bool {
-    attempt.is_cancelled()
 }
 
 #[cfg(test)]
