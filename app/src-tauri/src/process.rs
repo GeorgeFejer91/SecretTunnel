@@ -1,10 +1,13 @@
 use crate::diag::{self, Diagnostics};
 use crate::error::AppError;
+use crate::lifecycle::{Attempt, Coordinator, LifecycleEndpoint};
+use crate::ownership::{ActivationWatcher, ProfileLock};
+use crate::readiness::ReadinessScheduler;
 use crate::settings::{
     effective_workspace_path, fresh_public_path_token, fresh_zrok_name, load_or_create_settings,
     mcp_url, normalize_windows_verbatim_prefix, redact_secrets, save_settings,
-    secrets_for_redaction, validate_zrok_name, write_managed_mcp_config, AccessMode, AppPaths,
-    Settings,
+    secrets_for_redaction, validate_zrok_name, write_managed_mcp_config,
+    AccessMode, AppPaths, Settings,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -23,6 +26,7 @@ const DEFAULT_LOCAL_PORT: &str = "8787";
 const MAX_LOG_LINES: usize = 160;
 const AUTO_START_RETRY_AFTER: Duration = Duration::from_secs(20);
 const SUBPROCESS_DEADLINE: Duration = Duration::from_secs(15);
+const CLEANUP_CONFIRM_DEADLINE: Duration = Duration::from_secs(3);
 
 const INSTANCE_ID_ENV: &str = "SECRET_TUNNEL_INSTANCE_ID";
 const ASSET_CLASS_ENV: &str = "SECRET_TUNNEL_ASSET_CLASS";
@@ -73,6 +77,352 @@ pub struct AppState {
     instance_id: String,
     launch_environment: Option<Settings>,
     diagnostics: Diagnostics,
+    coordinator: Arc<Coordinator>,
+    readiness: Arc<ReadinessScheduler>,
+    profile_lock: Option<Arc<ProfileLock>>,
+    activation_watcher: Arc<Mutex<Option<ActivationWatcher>>>,
+}
+
+/// Coordinator endpoint: performs the actual start/stop operations within the
+/// lifecycle coordinator's serialized execution model. Shares the same
+/// runtime state and configuration paths as `AppState`.
+struct ServiceEndpoint {
+    paths: AppPaths,
+    runtime: Arc<Mutex<RuntimeState>>,
+    status_probe_path: Option<PathBuf>,
+    instance_id: String,
+    diagnostics: Diagnostics,
+}
+
+impl LifecycleEndpoint for ServiceEndpoint {
+    fn start_services(
+        &self,
+        attempt: &Attempt,
+        settings: &Settings,
+    ) -> Result<(), AppError> {
+        if attempt.is_cancelled() {
+            return Err(AppError::new("cancelled", "Superseded before start."));
+        }
+        validate_zrok_name(&settings.zrok_name)?;
+        effective_workspace_path(&settings.workspace_path)?;
+
+        write_managed_mcp_config(&self.paths, settings)?;
+
+        if attempt.is_cancelled() {
+            return Err(AppError::new(
+                "cancelled",
+                "Superseded after config write.",
+            ));
+        }
+        if !mcp_runtime_exists(settings) {
+            return Err(AppError::new(
+                "missing_gpt_repo_mcp",
+                "Bundled gpt-repo-mcp runtime is missing.",
+            ));
+        }
+        if bundled_executable("node").is_none() {
+            return Err(AppError::new(
+                "missing_node",
+                "Bundled Node runtime is missing.",
+            ));
+        }
+        if bundled_executable("zrok2").is_none() {
+            return Err(AppError::new(
+                "missing_zrok",
+                "Bundled zrok2 is missing.",
+            ));
+        }
+        if !zrok_environment_enabled() {
+            return Err(AppError::new("zrok_not_enabled", "zrok needs enable"));
+        }
+        if attempt.is_cancelled() {
+            return Err(AppError::new(
+                "cancelled",
+                "Superseded before spawning.",
+            ));
+        }
+
+        {
+            if let Ok(mut runtime) = self.runtime.lock() {
+                runtime.clear_owned_shares_for_host();
+            }
+        }
+        clear_stale_local_port(self.runtime.clone());
+        ensure_zrok_name(settings)?;
+        clear_stale_zrok_shares_for(
+            settings.zrok_name.clone(),
+            &self.runtime,
+            &self.paths,
+            &self.diagnostics,
+        );
+
+        let mcp = self.spawn_mcp(attempt, settings)?;
+        let mcp_pid = mcp.id();
+        let zrok = match self.spawn_zrok(attempt, settings) {
+            Ok(child) => child,
+            Err(error) => {
+                stop_child(mcp);
+                if let Ok(mut runtime) = self.runtime.lock() {
+                    runtime.untrack_child(mcp_pid, AssetClass::McpNode);
+                }
+                return Err(error);
+            }
+        };
+
+        let mut runtime = self
+            .runtime
+            .lock()
+            .map_err(|_| AppError::new("runtime_lock", "Runtime state is unavailable."))?;
+        runtime.mcp = Some(mcp);
+        runtime.zrok = Some(zrok);
+        runtime.starting = false;
+        runtime.push_log("app", format!("MCP URL: {}", mcp_url(settings)));
+        drop(runtime);
+
+        takeover_or_keep_owned_shares(&settings.zrok_name, &self.runtime);
+
+        if let Some(path) = &self.status_probe_path {
+            if let Ok(runtime) = self.runtime.lock() {
+                write_status_file(
+                    path,
+                    "running",
+                    settings,
+                    &runtime,
+                    None,
+                    &self.instance_id,
+                    &self.diagnostics,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn stop_services(&self, attempt: &Attempt) -> Result<bool, AppError> {
+        let (mcp, zrok) = match self.runtime.lock() {
+            Ok(mut runtime) => {
+                let children = (runtime.mcp.take(), runtime.zrok.take());
+                runtime.owned_share_tokens.clear();
+                runtime.known_mcp_pids.clear();
+                runtime.known_zrok_pids.clear();
+                children
+            }
+            Err(_) => return Ok(false),
+        };
+        for pid in attempt.registered_children() {
+            kill_process_tree(pid);
+        }
+        if let Some(child) = zrok {
+            stop_child(child);
+        }
+        if let Some(child) = mcp {
+            stop_child(child);
+        }
+        Ok(true)
+    }
+}
+
+impl ServiceEndpoint {
+    fn spawn_mcp(
+        &self,
+        attempt: &Attempt,
+        settings: &Settings,
+    ) -> Result<Child, AppError> {
+        let runtime_dir = bundled_mcp_runtime_dir().ok_or_else(|| {
+            AppError::new(
+                "missing_gpt_repo_mcp",
+                "Bundled gpt-repo-mcp runtime is missing.",
+            )
+        })?;
+        let node = bundled_executable("node").ok_or_else(|| {
+            AppError::new(
+                "missing_node",
+                "Bundled Node runtime is missing.",
+            )
+        })?;
+        let mut command = Command::new(node);
+        let normalized_runtime_dir =
+            PathBuf::from(normalize_windows_verbatim_prefix(&runtime_dir.to_string_lossy()));
+        let script_path = normalized_runtime_dir.join("dist").join("server.js");
+        command
+            .current_dir(&normalized_runtime_dir)
+            .arg(&script_path);
+        configure_mcp_environment(&mut command, &self.paths, settings);
+        if settings.access_mode == AccessMode::Read {
+            command.env("GPT_REPO_READ_ONLY_SURFACE", "1");
+        } else {
+            command.env_remove("GPT_REPO_READ_ONLY_SURFACE");
+        }
+        command
+            .env(INSTANCE_ID_ENV, &self.instance_id)
+            .env(ASSET_CLASS_ENV, AssetClass::McpNode.tag());
+        let child = spawn_tracked(
+            command,
+            "mcp",
+            AssetClass::McpNode,
+            self.runtime.clone(),
+        )?;
+        attempt.register_child(child.id());
+        Ok(child)
+    }
+
+    fn spawn_zrok(
+        &self,
+        attempt: &Attempt,
+        settings: &Settings,
+    ) -> Result<Child, AppError> {
+        let share_name = format!("public:{}", settings.zrok_name);
+        let port = local_port();
+        let mut command = Command::new(bundled_zrok_command()?);
+        command
+            .arg("share")
+            .arg("public")
+            .arg(format!("http://127.0.0.1:{port}"))
+            .arg("-n")
+            .arg(share_name)
+            .arg("--headless")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env(INSTANCE_ID_ENV, &self.instance_id)
+            .env(ASSET_CLASS_ENV, AssetClass::ZrokShare.tag());
+        let child = spawn_tracked(
+            command,
+            "zrok",
+            AssetClass::ZrokShare,
+            self.runtime.clone(),
+        )?;
+        attempt.register_child(child.id());
+        Ok(child)
+    }
+}
+
+fn write_status_file(
+    path: &Path,
+    event: &str,
+    settings: &Settings,
+    runtime: &RuntimeState,
+    failure_code: Option<&str>,
+    instance_id: &str,
+    diagnostics: &Diagnostics,
+) {
+    if let Some(parent) = path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            diagnostics.event(
+                "status-write-failed",
+                &format!("Could not create status directory: {error}"),
+            );
+            return;
+        }
+    }
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let secrets = secrets_for_redaction(settings);
+    let logs = runtime
+        .logs
+        .iter()
+        .map(|log| {
+            format!(
+                "{}: {}",
+                log.source,
+                redact_secrets(&log.line, &secrets)
+            )
+        })
+        .collect::<Vec<_>>();
+    let document = json!({
+        "event": event,
+        "timestampMs": timestamp_ms,
+        "instanceId": instance_id,
+        "running": runtime.is_running(),
+        "starting": runtime.starting,
+        "workspaceConfigured": settings.workspace_path.is_some(),
+        "accessMode": settings.access_mode.as_str(),
+        "zrokEnabled": StatusFacts::collect(settings).zrok_enabled,
+        "zrokInstalled": StatusFacts::collect(settings).zrok_installed,
+        "mcpRuntimeFound": StatusFacts::collect(settings).mcp_runtime_found,
+        "failureCode": failure_code,
+        "mcpPids": runtime.known_mcp_pids.iter().copied().collect::<Vec<_>>(),
+        "zrokPids": runtime.known_zrok_pids.iter().copied().collect::<Vec<_>>(),
+        "ownedShareTokens": runtime.owned_share_tokens.iter().cloned().collect::<Vec<_>>(),
+        "logs": logs
+    });
+    let tmp = path.with_extension(format!(
+        "status.json.tmp.{}.{}",
+        std::process::id(),
+        timestamp_ms
+    ));
+    if let Err(error) = fs::write(&tmp, serde_json::to_vec_pretty(&document).unwrap_or_default()) {
+        let _ = fs::remove_file(&tmp);
+        diagnostics.event(
+            "status-write-failed",
+            &format!("Could not write status probe: {error}"),
+        );
+        return;
+    }
+    if let Err(error) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        diagnostics.event(
+            "status-write-failed",
+            &format!("Could not publish status probe: {error}"),
+        );
+    }
+}
+
+fn clear_stale_zrok_shares_for(
+    zrok_name: String,
+    runtime: &Arc<Mutex<RuntimeState>>,
+    paths: &AppPaths,
+    diagnostics: &Diagnostics,
+) {
+    let owned_tokens: HashSet<String> = match runtime.lock() {
+        Ok(runtime) => runtime.owned_share_tokens.iter().cloned().collect(),
+        Err(_) => return,
+    };
+    let tokens = stale_zrok_share_tokens(&zrok_name);
+    if tokens.is_empty() {
+        return;
+    }
+    let Ok(zrok) = bundled_zrok_command() else {
+        return;
+    };
+    for token in tokens {
+        if owned_tokens.contains(&token) {
+            continue;
+        }
+        let mut command = Command::new(&zrok);
+        command
+            .arg("delete")
+            .arg("share")
+            .arg(&token)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        suppress_console_window(&mut command);
+        let cleared = command
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        let message = if cleared {
+            format!("Cleared stale zrok share {token} for a stable URL.")
+        } else {
+            format!("Could not clear stale zrok share {token}.")
+        };
+        diagnostics.event("app", &message);
+    }
+}
+
+fn takeover_or_keep_owned_shares(zrok_name: &str, runtime: &Arc<Mutex<RuntimeState>>) {
+    for _ in 0..10 {
+        let live_tokens = stale_zrok_share_tokens(zrok_name);
+        if !live_tokens.is_empty() {
+            if let Ok(mut runtime) = runtime.lock() {
+                for token in live_tokens {
+                    runtime.record_owned_share(&token);
+                }
+            }
+            return;
+        }
+        thread::sleep(Duration::from_millis(300));
+    }
 }
 
 impl AppState {
@@ -83,13 +433,70 @@ impl AppState {
     pub fn with_launch_environment(paths: AppPaths, launch_environment: Option<Settings>) -> Self {
         let diagnostics = Diagnostics::new(&paths);
         diag::bootstrap(&diagnostics, launch_environment.is_some());
+        let runtime = Arc::new(Mutex::new(RuntimeState::default()));
+        let status_probe_path = status_probe_path_from_environment();
+        let instance_id = fresh_instance_id();
+        let readiness = Arc::new(ReadinessScheduler::new());
+        let endpoint = ServiceEndpoint {
+            paths: paths.clone(),
+            runtime: runtime.clone(),
+            status_probe_path: status_probe_path.clone(),
+            instance_id: instance_id.clone(),
+            diagnostics: diagnostics.clone(),
+        };
+        let coordinator = Arc::new(Coordinator::new(Arc::new(endpoint)));
+        coordinator.attach_readiness(readiness.clone());
         Self {
             paths,
-            runtime: Arc::new(Mutex::new(RuntimeState::default())),
-            status_probe_path: status_probe_path_from_environment(),
-            instance_id: fresh_instance_id(),
+            runtime,
+            status_probe_path,
+            instance_id,
             launch_environment,
             diagnostics,
+            coordinator,
+            readiness,
+            profile_lock: None,
+            activation_watcher: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn with_profile_lock(
+        paths: AppPaths,
+        launch_environment: Option<Settings>,
+        profile_lock: Option<ProfileLock>,
+    ) -> Self {
+        let diagnostics = Diagnostics::new(&paths);
+        diag::bootstrap(&diagnostics, launch_environment.is_some());
+        let runtime = Arc::new(Mutex::new(RuntimeState::default()));
+        let status_probe_path = status_probe_path_from_environment();
+        let instance_id = fresh_instance_id();
+        let readiness = Arc::new(ReadinessScheduler::new());
+        let endpoint = ServiceEndpoint {
+            paths: paths.clone(),
+            runtime: runtime.clone(),
+            status_probe_path: status_probe_path.clone(),
+            instance_id: instance_id.clone(),
+            diagnostics: diagnostics.clone(),
+        };
+        let coordinator = Arc::new(Coordinator::new(Arc::new(endpoint)));
+        coordinator.attach_readiness(readiness.clone());
+        Self {
+            paths,
+            runtime,
+            status_probe_path,
+            instance_id,
+            launch_environment,
+            diagnostics,
+            coordinator,
+            readiness,
+            profile_lock: profile_lock.map(Arc::new),
+            activation_watcher: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn set_activation_watcher(&self, watcher: ActivationWatcher) {
+        if let Ok(mut slot) = self.activation_watcher.lock() {
+            *slot = Some(watcher);
         }
     }
 

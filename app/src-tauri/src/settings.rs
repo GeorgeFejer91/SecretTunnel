@@ -43,7 +43,7 @@ impl AccessMode {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     #[serde(default = "default_version")]
@@ -242,6 +242,20 @@ pub fn apply_launch_environment_overrides(
     }
 
     Ok(changed.then_some(settings))
+}
+
+/// Deterministic, process-independent revision for a settings snapshot. Two
+/// snapshots with identical configuration yield the same revision, so the
+/// lifecycle coordinator can coalesce equivalent starts.
+pub fn settings_revision(settings: &Settings) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    settings.workspace_path.hash(&mut hasher);
+    settings.access_mode.as_str().hash(&mut hasher);
+    settings.zrok_name.hash(&mut hasher);
+    settings.public_path_token.hash(&mut hasher);
+    settings.gpt_repo_mcp_path.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub fn validate_zrok_name(value: &str) -> Result<String, AppError> {
