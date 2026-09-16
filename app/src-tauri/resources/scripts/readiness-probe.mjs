@@ -136,6 +136,25 @@ async function probeEndpoint(name, url, label) {
   return result("verified", `${label}: HTTP ${response.status}`);
 }
 
+// Terminating the session is not optional housekeeping. `initialize` creates a
+// real server-side session, and this probe runs on every readiness tick against
+// both the local and the public URL. Left open, those sessions accumulate until
+// the server reaches GPT_REPO_MAX_SESSIONS (default 100) and then answers every
+// client - ChatGPT included - with "MCP session capacity reached", taking down
+// the endpoint the probe exists to watch. Streamable HTTP uses DELETE with the
+// session id as the termination signal.
+async function terminateSession(url, sessionId) {
+  if (!sessionId) return;
+  try {
+    await httpCheck(url, {
+      method: "DELETE",
+      headers: { "Mcp-Session-Id": sessionId, Accept: "application/json" },
+    });
+  } catch {
+    // Best effort: a failed cleanup must not change the gate's verdict.
+  }
+}
+
 async function probeProtocol(name, url, label) {
   if (!url) return unsupported(`${label} not started`);
   let response;
@@ -152,12 +171,16 @@ async function probeProtocol(name, url, label) {
     const reason = error?.name === "AbortError" ? "timeout" : error?.cause?.code ?? error?.message ?? "request failed";
     return failed(`${label}: ${reason}`);
   }
+  const sessionId = response.headers.get("mcp-session-id");
   if (!response.ok) {
+    await terminateSession(url, sessionId);
     return failed(`${label}: HTTP ${response.status}`);
   }
   const contentType = response.headers.get("content-type") ?? "";
   const bodyText = await response.text();
-  return mcpResultFromBody(bodyText, contentType, label);
+  const outcome = mcpResultFromBody(bodyText, contentType, label);
+  await terminateSession(url, sessionId);
+  return outcome;
 }
 
 // Health/endpoint gate hits the server's JSON health route, which also proves
