@@ -15,9 +15,9 @@
       {
         "title": "Secret Tunnel",
         "width": 580,
-        "height": 560,
+        "height": 648,
         "minWidth": 580,
-        "minHeight": 560,
+        "minHeight": 648,
         "resizable": false,
         "maximizable": false,
         "minimizable": true

@@ -67,10 +67,18 @@ assertMatch(
   "animated SVG must only load while running and unload while stopped",
 );
 
-assertMatch(
+// get_status is an observation path: webview polling must never drive service
+// startup. Retries belong to the backend supervisor, which honours an explicit
+// stop; a poll-driven start ignores it and restarts what the user just stopped.
+assertNoMatch(
   commandsRs,
-  /pub fn get_status[\s\S]*request_autostart_if_configured\(\)\?/,
-  "status polling must request autonomous startup when configured",
+  /pub fn get_status[\s\S]*?request_autostart_if_configured/,
+  "status polling must not start services",
+);
+assertMatch(
+  processRs,
+  /pub fn start_supervisor\(&self\)/,
+  "the backend must own startup retries",
 );
 assertMatch(
   commandsRs,
@@ -88,6 +96,30 @@ assertMatch(
   "zrok enable must start services after successful setup",
 );
 
+// Health colouring. The green state must be earned by a verified public MCP
+// handshake, not by a spawned process: "running" has repeatedly been true while
+// the endpoint answered 502 or 503, and a green light that can lie is worse
+// than no light at all.
+assertIncludes(html, 'id="public-state"', "UI must report whether ChatGPT can reach the app");
+assertIncludes(html, 'id="diag-reason"', "UI must have a place to explain a red state");
+assertIncludes(html, 'id="open-instructions"', "UI must offer setup instructions");
+assertIncludes(html, 'id="open-about"', "UI must explain what the app does");
+assertIncludes(html, '<dialog id="instructions"', "instructions must open as a dialog");
+assertIncludes(html, '<dialog id="about"', "about must open as a dialog");
+assertIncludes(css, ".state-ok", "UI must define a healthy state colour");
+assertIncludes(css, ".state-warn", "UI must define an in-progress state colour");
+assertIncludes(css, ".state-bad", "UI must define a blocked state colour");
+assertMatch(
+  mainTs,
+  /publicProtocol\.status === "verified"[\s\S]*level: "ok"/,
+  "reachability may only go green on a verified public MCP handshake",
+);
+assertMatch(
+  mainTs,
+  /cleanupBlockedReason[\s\S]*level: "bad"/,
+  "a cleanup block must surface as a red state instead of being silent",
+);
+
 assertMatch(
   processRs,
   /fn status_probe_path_from_environment[\s\S]*SECRET_TUNNEL_STATUS_FILE/,
@@ -95,8 +127,8 @@ assertMatch(
 );
 assertMatch(
   processRs,
-  /fn write_status_probe[\s\S]*"running"[\s\S]*"starting"[\s\S]*"workspaceConfigured"[\s\S]*"failureCode"/,
-  "status probe must write sanitized running-state and failure fields",
+  /fn write_status_document[\s\S]*"running"[\s\S]*"workspaceConfigured"[\s\S]*"failureCode"/,
+  "status document must write sanitized running-state and failure fields",
 );
 assertMatch(
   processRs,
@@ -165,7 +197,7 @@ assertMatch(
 );
 
 assertEqual(mainWindow.width, 580, "window width must stay fixed");
-assertEqual(mainWindow.height, 560, "window height must stay fixed");
+assertEqual(mainWindow.height, 648, "window height must stay fixed");
 assertEqual(mainWindow.resizable, false, "window must not be resizable");
 assertEqual(mainWindow.maximizable, false, "window must not be maximizable");
 assertArrayIncludes(bundle.resources, "binaries/", "installer must carry complete runtime binaries directory");
@@ -199,6 +231,12 @@ function assertIncludes(text, needle, message) {
 
 function assertMatch(text, pattern, message) {
   if (!pattern.test(text)) {
+    throw new Error(`${message}: ${pattern}`);
+  }
+}
+
+function assertNoMatch(text, pattern, message) {
+  if (pattern.test(text)) {
     throw new Error(`${message}: ${pattern}`);
   }
 }

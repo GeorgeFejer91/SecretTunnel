@@ -118,7 +118,146 @@
           <span>gpt-repo-mcp</span>
           <strong id="mcp-state">Checking</strong>
         </div>
+        <div class="diag-row">
+          <span>ChatGPT can reach it</span>
+          <strong id="public-state">Checking</strong>
+        </div>
+        <div class="diag-footer">
+          <p id="diag-reason" class="diag-reason" hidden></p>
+          <div class="diag-links">
+            <button id="open-about" type="button" class="link-button">About</button>
+            <button id="open-instructions" type="button" class="link-button">Instructions</button>
+          </div>
+        </div>
       </section>
     </main>
+
+    <dialog id="about" class="sheet">
+      <div class="sheet-head">
+        <h2>About Secret Tunnel</h2>
+        <button id="close-about" type="button" class="icon-button" aria-label="Close">✕</button>
+      </div>
+
+      <div class="sheet-body">
+        <h3>What this app does</h3>
+        <p>
+          It lets ChatGPT read — and optionally edit — the files in <em>one folder you choose</em> on this
+          computer. It does that by running a small file server on your machine and giving it a public web
+          address that ChatGPT can call.
+        </p>
+        <p>Nothing is uploaded in advance. Files are read from your disk at the moment ChatGPT asks for them.</p>
+
+        <h3>What an MCP server is</h3>
+        <p>
+          MCP, the Model Context Protocol, is a standard way for an AI assistant to call <em>tools</em> that
+          someone else has written. The assistant does not get a folder; it gets a list of operations such as
+          "list files", "read this file", "search for this text", and it calls them like functions and reads
+          the replies.
+        </p>
+        <p>
+          The MCP server here is <code>gpt-repo-mcp</code>, a Node program bundled inside this app. It offers
+          those tools and refuses anything outside the folder you picked. In <strong>Read</strong> mode the
+          tools that modify files are not offered at all.
+        </p>
+
+        <h3>Why a tunnel is needed</h3>
+        <p>
+          The file server listens on <code>127.0.0.1</code>, the loopback address. That is not a personal
+          address — it is the same number on every computer in the world, and on each one it means "this
+          machine, talking to itself". Nothing outside your computer can reach it, by design. The port after
+          it (<code>8787</code> unless you change it) just picks which program on this machine answers.
+        </p>
+        <p>
+          ChatGPT does not run on your computer; it runs in OpenAI's datacentre. It cannot dial your laptop —
+          your router and firewall exist precisely to stop that.
+        </p>
+        <p>
+          A tunnel solves that. This app uses <strong>zrok</strong>: it opens an outbound connection from your
+          machine to zrok's servers and asks for a public HTTPS address. Requests arriving at that address are
+          carried back down the connection you opened and handed to your local file server. You never have to
+          open a port or change your router, because the connection was made from the inside out.
+        </p>
+
+        <h3>What actually happens when ChatGPT reads a file</h3>
+        <ol>
+          <li>ChatGPT sends an MCP tool call to your public address.</li>
+          <li>zrok forwards it down the tunnel to the loopback port on this machine.</li>
+          <li>The local server checks the request is inside your chosen folder, reads the file from disk, and replies.</li>
+          <li>The reply travels back the same way. The app stays a courier; the files stay on your disk.</li>
+        </ol>
+
+        <h3>What this means for your privacy</h3>
+        <ul>
+          <li>Only the folder you selected is reachable. Nothing above or outside it is offered.</li>
+          <li>The address contains a long secret token. <strong>Anyone who has the full address can read that folder</strong>, so treat it like a password.</li>
+          <li>In <strong>Read+write</strong> mode they could also change files in it. Use <strong>Read</strong> unless you need edits.</li>
+          <li>Close this window and the tunnel closes with it. The address stops working until you reopen the app.</li>
+          <li>The refresh button next to the address issues a brand-new one, which immediately invalidates the old.</li>
+        </ul>
+
+        <h3>Why the address stays the same</h3>
+        <p>
+          The name in your address is reserved on your zrok account, so it survives restarts and folder
+          changes. That is why you only add the plugin to ChatGPT once, and can keep pointing the app at
+          different projects afterwards.
+        </p>
+      </div>
+
+      <div class="sheet-foot">
+        <button id="done-about" type="button" class="primary">Close</button>
+      </div>
+    </dialog>
+
+    <dialog id="instructions" class="sheet">
+      <div class="sheet-head">
+        <h2>Setup instructions</h2>
+        <button id="close-instructions" type="button" class="icon-button" aria-label="Close">✕</button>
+      </div>
+
+      <div class="sheet-body">
+        <h3>1. Enable zrok (one time)</h3>
+        <ol>
+          <li>Open <button class="link-button" data-open-url="https://myzrok.io">myzrok.io</button> and create a free account.</li>
+          <li>In the zrok console, copy your <strong>enable token</strong>.</li>
+          <li>Paste it into the <strong>zrok token</strong> box in this window and press <strong>Enable</strong>.</li>
+        </ol>
+        <p class="sheet-note">The token is used once to register this machine. It is not your MCP address.</p>
+
+        <h3>2. Choose the folder to share</h3>
+        <ol>
+          <li>Press <strong>Select access folder</strong> and pick a project folder.</li>
+          <li>Never pick a drive root, your home folder, or a system folder.</li>
+          <li>Pick <strong>Read</strong>, or <strong>Read+write</strong> if ChatGPT should be able to change files.</li>
+        </ol>
+
+        <h3>3. Wait for green</h3>
+        <p>
+          <strong>ChatGPT can reach it</strong> must say <span class="state-ok">Connected</span>. That means a real
+          MCP handshake succeeded through the public address. If it is red, the reason is shown underneath it.
+        </p>
+
+        <h3>4. Add it to ChatGPT</h3>
+        <ol>
+          <li>Press <strong>Copy</strong> next to the MCP Address above.</li>
+          <li>In ChatGPT, open <strong>Plugins</strong> in the left sidebar, then <strong>New Plugin</strong>.</li>
+          <li><strong>Name</strong>: anything, for example <em>Secret Tunnel</em>.</li>
+          <li><strong>Connection</strong>: leave it on <strong>Server URL</strong> and paste the copied address.</li>
+          <li><strong>Authentication</strong>: choose <strong>No Auth</strong>. The address already contains a secret token.</li>
+          <li>Tick <strong>I understand and want to continue</strong>, then press <strong>Create</strong>.</li>
+        </ol>
+
+        <h3>Day to day</h3>
+        <ul>
+          <li>Keep this window open while ChatGPT is using the folder.</li>
+          <li>You can switch folders at any time — <strong>the MCP address stays the same</strong>, so you do not need to add the plugin again.</li>
+          <li>Treat the address like a password: anyone who has it can read the shared folder.</li>
+        </ul>
+      </div>
+
+      <div class="sheet-foot">
+        <button id="copy-url-from-instructions" type="button">Copy MCP address</button>
+        <button id="done-instructions" type="button" class="primary">Done</button>
+      </div>
+    </dialog>
   </body>
 </html>
