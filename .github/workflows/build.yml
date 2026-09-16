@@ -59,11 +59,28 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: app/package-lock.json
+          # Both installs matter: the launcher's own dependencies and the
+          # vendored MCP server's, which prepare:runtime installs and builds.
+          cache-dependency-path: |
+            app/package-lock.json
+            app/vendor/gpt-repo-mcp/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+
+      # Without this, every run recompiles the whole dependency tree - around
+      # 400 crates for Tauri - on all three platforms from scratch. Measured on
+      # the v0.1.0 build: 143s for the debug check/test pass and 330s for the
+      # release build, so roughly 8 of each job's 9.5 minutes was compiling
+      # dependencies that had not changed. The key is per-job so the three
+      # platforms never share a cache, and it covers the release profile too,
+      # which `tauri build` uses.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri -> target
+          key: ${{ matrix.artifact }}
+          cache-all-crates: true
 
       - run: npm ci
 
