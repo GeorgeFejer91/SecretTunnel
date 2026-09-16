@@ -99,7 +99,9 @@ pub fn app_paths() -> Result<AppPaths, AppError> {
         Some(dir) => dir,
         None => {
             let dirs = ProjectDirs::from("com", "GeorgeFejer", "ChatGPT Local MCP Launcher")
-                .ok_or_else(|| AppError::new("app_data", "Could not resolve app data directory."))?;
+                .ok_or_else(|| {
+                    AppError::new("app_data", "Could not resolve app data directory.")
+                })?;
             dirs.config_dir().to_path_buf()
         }
     };
@@ -153,9 +155,7 @@ pub fn load_settings(paths: &AppPaths) -> Result<Option<Settings>, AppError> {
 /// parse. The bool is `true` when the stored file was not itself valid JSON.
 /// Callers on a write-capable path use it to rewrite the file in canonical
 /// form; the observation path ignores it and never writes.
-pub fn load_settings_detailed(
-    paths: &AppPaths,
-) -> Result<Option<(Settings, bool)>, AppError> {
+pub fn load_settings_detailed(paths: &AppPaths) -> Result<Option<(Settings, bool)>, AppError> {
     if !paths.settings_path.exists() {
         return Ok(None);
     }
@@ -278,16 +278,14 @@ pub fn save_settings(paths: &AppPaths, settings: &Settings) -> Result<(), AppErr
             )
         })?;
     }
-    let tmp = paths
-        .settings_path
-        .with_extension(format!(
-            "json.tmp.{}.{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
+    let tmp = paths.settings_path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
     if let Err(error) = fs::write(&tmp, serde_json::to_vec_pretty(settings)?) {
         let _ = fs::remove_file(&tmp);
         return Err(AppError::new("settings_write_failed", error.to_string()));
@@ -303,9 +301,7 @@ pub fn save_settings(paths: &AppPaths, settings: &Settings) -> Result<(), AppErr
 /// persist the result: the override values live only for this process's
 /// lifetime. This allows the smoke harness to inject a test workspace, zrok
 /// name, and path token without touching the production settings file.
-pub fn apply_launch_environment_overrides(
-    paths: &AppPaths,
-) -> Result<Option<Settings>, AppError> {
+pub fn apply_launch_environment_overrides(paths: &AppPaths) -> Result<Option<Settings>, AppError> {
     // Purely in-memory: load existing settings without creating a file, and use
     // defaults only as a base for the override merge. Nothing is persisted here.
     let mut settings = load_settings(paths)?.unwrap_or_default();
@@ -629,8 +625,7 @@ mod tests {
     use super::{
         apply_launch_environment_overrides, effective_workspace_path, fresh_public_path_token,
         fresh_zrok_name, is_home_directory, load_or_create_settings, load_settings,
-        load_settings_detailed,
-        normalize_windows_verbatim_prefix, redact_secrets, save_settings,
+        load_settings_detailed, normalize_windows_verbatim_prefix, redact_secrets, save_settings,
         validate_public_path_token, validate_zrok_name, AccessMode, AppPaths, Settings,
     };
     use std::sync::Mutex;
@@ -765,7 +760,10 @@ mod tests {
 
         // load_or_create_settings must preserve the stored path (observation-only)
         let loaded = load_or_create_settings(&paths).unwrap();
-        assert_eq!(loaded.workspace_path, Some(home.to_string_lossy().to_string()));
+        assert_eq!(
+            loaded.workspace_path,
+            Some(home.to_string_lossy().to_string())
+        );
 
         // effective_workspace_path blocks the unsafe selection without erasing it
         let effective = effective_workspace_path(&loaded.workspace_path);
@@ -775,7 +773,10 @@ mod tests {
 
         // The on-disk file is unchanged
         let reloaded = load_settings(&paths).unwrap().unwrap();
-        assert_eq!(reloaded.workspace_path, Some(home.to_string_lossy().to_string()));
+        assert_eq!(
+            reloaded.workspace_path,
+            Some(home.to_string_lossy().to_string())
+        );
 
         if let Some(previous) = previous {
             env::set_var("USERPROFILE", previous);
@@ -863,7 +864,10 @@ mod tests {
 
         // The settings file was NOT modified by the in-memory override
         let persisted = load_settings(&paths).unwrap();
-        assert!(persisted.is_none(), "no settings file should have been created");
+        assert!(
+            persisted.is_none(),
+            "no settings file should have been created"
+        );
 
         restore_env("SECRET_TUNNEL_WORKSPACE_PATH", previous_workspace);
         restore_env("SECRET_TUNNEL_ACCESS_MODE", previous_mode);
@@ -920,7 +924,10 @@ mod tests {
         let (settings, repaired) = load_settings_detailed(&paths).unwrap().unwrap();
         assert!(repaired, "the stored bytes were not valid JSON");
         assert_eq!(settings.zrok_name, "gptmcpexamplename1");
-        assert_eq!(settings.public_path_token, "0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            settings.public_path_token,
+            "0123456789abcdef0123456789abcdef"
+        );
         assert_eq!(
             settings.workspace_path.as_deref(),
             Some(r"C:\Users\Me\Documents")
@@ -972,7 +979,9 @@ mod tests {
         fs::write(&paths.settings_path, "this is not json at all").unwrap();
         let error = load_settings_detailed(&paths).unwrap_err();
         assert_eq!(error.code, "settings_unreadable");
-        assert!(fs::read_to_string(&paths.settings_path).unwrap().contains("not json"));
+        assert!(fs::read_to_string(&paths.settings_path)
+            .unwrap()
+            .contains("not json"));
         fs::remove_dir_all(&paths.config_dir).ok();
     }
 }

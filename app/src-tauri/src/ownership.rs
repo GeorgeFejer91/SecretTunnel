@@ -277,11 +277,7 @@ impl ActivationWatcher {
                         let is_stale = entry
                             .metadata()
                             .and_then(|meta| meta.modified())
-                            .and_then(|modified| {
-                                modified
-                                    .elapsed()
-                                    .map_err(std::io::Error::other)
-                            })
+                            .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
                             .map(|age| age > MAX_REQUEST_AGE)
                             .unwrap_or(false);
                         if is_stale {
@@ -293,10 +289,7 @@ impl ActivationWatcher {
                         }
                         let token = name.strip_suffix(".request").unwrap_or(&name);
                         let ack_path = dir.join("acks").join(format!("{token}.ack"));
-                        let _ = fs::write(
-                            &ack_path,
-                            now_millis().to_string().as_bytes(),
-                        );
+                        let _ = fs::write(&ack_path, now_millis().to_string().as_bytes());
                         let _ = fs::remove_file(entry.path());
                     }
                 }
@@ -329,7 +322,9 @@ mod tests {
 
     fn temp_root(label: &str) -> PathBuf {
         let unique = format!("{}-{:x}", label, now_millis());
-        std::env::temp_dir().join("secret-tunnel-ownership-tests").join(unique)
+        std::env::temp_dir()
+            .join("secret-tunnel-ownership-tests")
+            .join(unique)
     }
 
     #[test]
@@ -363,7 +358,10 @@ mod tests {
         let LockState::HeldElsewhere(owner) = second else {
             panic!("expected HeldElsewhere while the first lock is held");
         };
-        assert_eq!(owner.config_dir, fs::canonicalize(&dir).unwrap().to_string_lossy());
+        assert_eq!(
+            owner.config_dir,
+            fs::canonicalize(&dir).unwrap().to_string_lossy()
+        );
 
         drop(first);
         let third = acquire_profile_lock(&dir).unwrap();

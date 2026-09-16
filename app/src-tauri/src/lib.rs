@@ -81,19 +81,16 @@ pub fn run() {
             // Owner-side activation watcher: a second launch of the same
             // profile requests its window be shown/unminimized/focused.
             let activation_config_dir = startup_state.paths.config_dir.clone();
-            if let Ok(watcher) = ownership::ActivationWatcher::spawn(
-                &activation_config_dir,
-                {
-                    let app_handle = app.handle().clone();
-                    move || {
-                        if let Some(window) = app_handle.get_webview_window("main") {
-                            let _ = window.unminimize();
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
+            if let Ok(watcher) = ownership::ActivationWatcher::spawn(&activation_config_dir, {
+                let app_handle = app.handle().clone();
+                move || {
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.show();
+                        let _ = window.set_focus();
                     }
-                },
-            ) {
+                }
+            }) {
                 startup_state.set_activation_watcher(watcher);
             }
             if launched_in_background() {

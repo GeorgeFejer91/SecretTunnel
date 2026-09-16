@@ -142,13 +142,9 @@ pub enum AttemptOutcome {
     Stopped,
     /// Startup failed after this attempt; a cleanup pass ran, with no
     /// confirmed leftovers.
-    FailedToStart {
-        error: Option<AppError>,
-    },
+    FailedToStart { error: Option<AppError> },
     /// Initial cleanup could not be confirmed; replacement startup is blocked.
-    CleanupFailed {
-        details: String,
-    },
+    CleanupFailed { details: String },
 }
 
 /// The concrete service operations. A worker calls exactly one of these based
@@ -162,11 +158,7 @@ pub trait LifecycleEndpoint: Send + Sync {
     /// that can narrow the work - replacing only the part that the change
     /// actually affects, and leaving the rest serving - overrides this. The
     /// default is a full restart, which is always correct if not always cheap.
-    fn reconfigure_services(
-        &self,
-        attempt: &Attempt,
-        settings: &Settings,
-    ) -> Result<(), AppError> {
+    fn reconfigure_services(&self, attempt: &Attempt, settings: &Settings) -> Result<(), AppError> {
         self.start_services(attempt, settings)
     }
 }
@@ -295,7 +287,15 @@ impl Coordinator {
             let publish_hook = self.publish_hook();
             let generation = attempt.generation;
             thread::spawn(move || {
-                run_worker(execution, endpoint, attempt, request, state, readiness, publish_hook);
+                run_worker(
+                    execution,
+                    endpoint,
+                    attempt,
+                    request,
+                    state,
+                    readiness,
+                    publish_hook,
+                );
             });
             generation
         } else {
@@ -341,16 +341,14 @@ impl Coordinator {
                     // cannot bypass the block either.
                     return Admission::Handled;
                 }
-                let same_snapshot = state
-                    .coalesce_key
-                    .as_ref()
-                    .is_some_and(|(last, last_revision)| {
-                        last_revision == revision && settings == last
-                    });
-                if state.desired_running
-                    && state.in_flight_generation.is_some()
-                    && same_snapshot
-                {
+                let same_snapshot =
+                    state
+                        .coalesce_key
+                        .as_ref()
+                        .is_some_and(|(last, last_revision)| {
+                            last_revision == revision && settings == last
+                        });
+                if state.desired_running && state.in_flight_generation.is_some() && same_snapshot {
                     // Equivalent start already in flight; coalesce.
                     return Admission::Handled;
                 }
@@ -388,11 +386,7 @@ impl Coordinator {
         }
     }
 
-    fn supercede(
-        &self,
-        state: &mut CoordinatorState,
-        request: &LifecycleRequest,
-    ) -> Admission {
+    fn supercede(&self, state: &mut CoordinatorState, request: &LifecycleRequest) -> Admission {
         state.generation += 1;
         let generation = state.generation;
         // Signal the in-flight attempt that it has been superseded so it can
@@ -411,14 +405,11 @@ impl Coordinator {
         }
         let share = match request {
             LifecycleRequest::Start {
-                settings,
-                revision,
-                ..
+                settings, revision, ..
             }
-            | LifecycleRequest::Reconfigure {
-                settings,
-                revision,
-            } => Some((settings.clone(), *revision)),
+            | LifecycleRequest::Reconfigure { settings, revision } => {
+                Some((settings.clone(), *revision))
+            }
             LifecycleRequest::Stop | LifecycleRequest::Shutdown => None,
         };
         if let Some((settings, revision)) = share {
@@ -439,8 +430,7 @@ impl Coordinator {
         state.in_flight_cancel = Some(cancel);
         let is_stop = matches!(request, LifecycleRequest::Stop | LifecycleRequest::Shutdown);
         if is_stop {
-            state
-                .effective = if state.blocked.is_some() {
+            state.effective = if state.blocked.is_some() {
                 LifecycleState::CleanupFailed
             } else {
                 LifecycleState::Stopping
@@ -520,24 +510,16 @@ pub trait ReadinessController: Send + Sync {
 
 fn settings_for_request(request: &LifecycleRequest) -> Settings {
     match request {
-        LifecycleRequest::Start {
-            settings, ..
-        }
-        | LifecycleRequest::Reconfigure {
-            settings, ..
-        } => settings.clone(),
+        LifecycleRequest::Start { settings, .. }
+        | LifecycleRequest::Reconfigure { settings, .. } => settings.clone(),
         LifecycleRequest::Stop | LifecycleRequest::Shutdown => Settings::default(),
     }
 }
 
 fn revision_for_request(request: &LifecycleRequest) -> u64 {
     match request {
-        LifecycleRequest::Start {
-            revision, ..
-        }
-        | LifecycleRequest::Reconfigure {
-            revision, ..
-        } => *revision,
+        LifecycleRequest::Start { revision, .. }
+        | LifecycleRequest::Reconfigure { revision, .. } => *revision,
         LifecycleRequest::Stop | LifecycleRequest::Shutdown => 0,
     }
 }
@@ -553,7 +535,14 @@ fn run_worker(
 ) {
     let hook = &publish_hook;
     if attempt.is_cancelled() {
-        publish(&state, &attempt, Some(LifecycleState::Stopped), None, None, hook);
+        publish(
+            &state,
+            &attempt,
+            Some(LifecycleState::Stopped),
+            None,
+            None,
+            hook,
+        );
         return;
     }
     let guard = match execution.lock() {
@@ -565,52 +554,55 @@ fn run_worker(
     // Re-check cancellation after acquiring the execution lock and before any
     // side effect, so a superseded worker never touches services.
     if attempt.is_cancelled() {
-        publish(&state, &attempt, Some(LifecycleState::Stopped), None, None, hook);
+        publish(
+            &state,
+            &attempt,
+            Some(LifecycleState::Stopped),
+            None,
+            None,
+            hook,
+        );
         return;
     }
 
     let outcome = match &request {
-        LifecycleRequest::Start {
-            settings, ..
+        LifecycleRequest::Start { settings, .. }
+        | LifecycleRequest::Reconfigure { settings, .. } => {
+            match if matches!(request, LifecycleRequest::Reconfigure { .. }) {
+                // Reconfiguration of a live generation gets the endpoint's
+                // narrower path, which may keep parts of it serving.
+                endpoint.reconfigure_services(&attempt, settings)
+            } else {
+                endpoint.start_services(&attempt, settings)
+            } {
+                Ok(()) => {
+                    if let Some(readiness) = &readiness {
+                        readiness.invalidate();
+                        readiness.schedule_for(&attempt);
+                    }
+                    AttemptOutcome::Running
+                }
+                Err(error) => {
+                    // Startup failed: run cleanup ourselves so the caller cannot
+                    // discard the cleanup outcome. Only a confirmed cleanup reports
+                    // FailedToStart; unconfirmed leftovers block replacements.
+                    let confirmed = match endpoint.stop_services(&attempt) {
+                        Ok(confirmed) => confirmed,
+                        Err(_) => false,
+                    };
+                    if confirmed {
+                        AttemptOutcome::FailedToStart { error: Some(error) }
+                    } else {
+                        AttemptOutcome::CleanupFailed {
+                            details: format!(
+                                "Start failed ({}), and cleanup could not be confirmed.",
+                                error.code
+                            ),
+                        }
+                    }
+                }
+            }
         }
-        | LifecycleRequest::Reconfigure {
-            settings, ..
-        } => match if matches!(request, LifecycleRequest::Reconfigure { .. }) {
-            // Reconfiguration of a live generation gets the endpoint's
-            // narrower path, which may keep parts of it serving.
-            endpoint.reconfigure_services(&attempt, settings)
-        } else {
-            endpoint.start_services(&attempt, settings)
-        } {
-            Ok(()) => {
-                if let Some(readiness) = &readiness {
-                    readiness.invalidate();
-                    readiness.schedule_for(&attempt);
-                }
-                AttemptOutcome::Running
-            }
-            Err(error) => {
-                // Startup failed: run cleanup ourselves so the caller cannot
-                // discard the cleanup outcome. Only a confirmed cleanup reports
-                // FailedToStart; unconfirmed leftovers block replacements.
-                let confirmed = match endpoint.stop_services(&attempt) {
-                    Ok(confirmed) => confirmed,
-                    Err(_) => false,
-                };
-                if confirmed {
-                    AttemptOutcome::FailedToStart {
-                        error: Some(error),
-                    }
-                } else {
-                    AttemptOutcome::CleanupFailed {
-                        details: format!(
-                            "Start failed ({}), and cleanup could not be confirmed.",
-                            error.code
-                        ),
-                    }
-                }
-            }
-        },
         LifecycleRequest::Stop | LifecycleRequest::Shutdown => {
             if let Some(readiness) = &readiness {
                 readiness.invalidate();
@@ -630,15 +622,32 @@ fn run_worker(
     };
 
     match outcome {
-        AttemptOutcome::Running => {
-            publish(&state, &attempt, Some(LifecycleState::Running), None, None, &hook)
-        }
-        AttemptOutcome::Stopped => {
-            publish(&state, &attempt, Some(LifecycleState::Stopped), None, None, &hook)
-        }
+        AttemptOutcome::Running => publish(
+            &state,
+            &attempt,
+            Some(LifecycleState::Running),
+            None,
+            None,
+            &hook,
+        ),
+        AttemptOutcome::Stopped => publish(
+            &state,
+            &attempt,
+            Some(LifecycleState::Stopped),
+            None,
+            None,
+            &hook,
+        ),
         AttemptOutcome::FailedToStart { error } => {
             let failure = error.map(|error| (error.message.clone(), error.code.to_string()));
-            publish(&state, &attempt, Some(LifecycleState::Stopped), None, failure, &hook)
+            publish(
+                &state,
+                &attempt,
+                Some(LifecycleState::Stopped),
+                None,
+                failure,
+                &hook,
+            )
         }
         AttemptOutcome::CleanupFailed { details } => publish(
             &state,
@@ -978,7 +987,9 @@ mod tests {
         );
         coordinator.submit(LifecycleRequest::Shutdown);
         wait_for(
-            |coordinator: &Coordinator| coordinator.effective_state() == LifecycleState::CleanupFailed,
+            |coordinator: &Coordinator| {
+                coordinator.effective_state() == LifecycleState::CleanupFailed
+            },
             &coordinator,
         );
         assert!(coordinator.blocked_reason().is_some());

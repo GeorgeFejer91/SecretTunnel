@@ -31,7 +31,8 @@ const [
   read("scripts/smoke-live-e2e.mjs"),
   read("scripts/clean-release-bundle.mjs"),
   read("scripts/prepare-gpt-repo-mcp.mjs"),
-  read(".github/workflows/build.yml"),
+  // The workflow lives at the repository root, one level above app/.
+  read("../.github/workflows/build.yml"),
 ]);
 
 const tauriConfig = JSON.parse(tauriConfigRaw);

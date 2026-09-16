@@ -133,7 +133,11 @@ impl ReadinessSnapshot {
             .iter()
             .filter_map(|entry| {
                 if entry.status == ProbeStatus::Failed {
-                    Some(format!("{}: {}", entry.kind, entry.detail.as_deref().unwrap_or("failed")))
+                    Some(format!(
+                        "{}: {}",
+                        entry.kind,
+                        entry.detail.as_deref().unwrap_or("failed")
+                    ))
                 } else {
                     None
                 }
@@ -165,7 +169,8 @@ pub struct ProbeContext {
 pub type ContextProvider = Arc<dyn Fn() -> ProbeContext + Send + Sync>;
 
 /// Returns the next full snapshot for the given context, annotating each gate.
-pub type ProbeFn = Arc<dyn Fn(&ProbeContext, &ReadinessSnapshot) -> ReadinessSnapshot + Send + Sync>;
+pub type ProbeFn =
+    Arc<dyn Fn(&ProbeContext, &ReadinessSnapshot) -> ReadinessSnapshot + Send + Sync>;
 
 struct SchedulerState {
     /// Latest published snapshot. Written only when the writer's generation
@@ -378,105 +383,110 @@ struct ProbeReport {
 /// bundled Node, bounded by `PROBE_DEADLINE`, and maps each gate report.
 /// Missing gates become `Pending`; a crashed/timeout probe marks every gate
 /// `Failed` so readiness cannot be claimed on an unmeasurable state.
-pub fn real_probe_fn(
-    probe_script_path: PathBuf,
-    bundled_node: PathBuf,
-) -> ProbeFn {
-    Arc::new(move |context: &ProbeContext, _prior: &ReadinessSnapshot| -> ReadinessSnapshot {
-        let mut snapshot = ReadinessSnapshot::pending();
-        let mut command = Command::new(&bundled_node);
-        command
-            .arg(&probe_script_path)
-            .arg("--local-url")
-            .arg(context.local_url.clone().unwrap_or_default())
-            .arg("--local-mcp-url")
-            .arg(context.local_mcp_url.clone().unwrap_or_default())
-            .arg("--public-url")
-            .arg(context.public_url.clone().unwrap_or_default())
-            .arg("--public-mcp-url")
-            .arg(context.public_mcp_url.clone().unwrap_or_default())
-            .arg("--pids")
-            .arg(
-                context
-                    .known_mcp_pids
-                    .iter()
-                    .map(u32::to_string)
-                    .collect::<Vec<_>>()
-                    .join(","),
-            )
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-        let result = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                return failed_everywhere(
-                    snapshot,
-                    format!("readiness probe could not start: {error}"),
-                );
+pub fn real_probe_fn(probe_script_path: PathBuf, bundled_node: PathBuf) -> ProbeFn {
+    Arc::new(
+        move |context: &ProbeContext, _prior: &ReadinessSnapshot| -> ReadinessSnapshot {
+            let mut snapshot = ReadinessSnapshot::pending();
+            let mut command = Command::new(&bundled_node);
+            command
+                .arg(&probe_script_path)
+                .arg("--local-url")
+                .arg(context.local_url.clone().unwrap_or_default())
+                .arg("--local-mcp-url")
+                .arg(context.local_mcp_url.clone().unwrap_or_default())
+                .arg("--public-url")
+                .arg(context.public_url.clone().unwrap_or_default())
+                .arg("--public-mcp-url")
+                .arg(context.public_mcp_url.clone().unwrap_or_default())
+                .arg("--pids")
+                .arg(
+                    context
+                        .known_mcp_pids
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                )
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                command.creation_flags(CREATE_NO_WINDOW);
             }
-        };
-        let deadline = Instant::now() + PROBE_DEADLINE;
-        let mut child = result;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let stdout = child
-                        .stdout
-                        .take()
-                        .map(|mut pipe| {
-                            use std::io::Read as _;
-                            let mut buffer = String::new();
-                            let _ = pipe.read_to_string(&mut buffer);
-                            buffer
-                        })
-                        .unwrap_or_default();
-                    let stderr = child
-                        .stderr
-                        .take()
-                        .map(|mut pipe| {
-                            use std::io::Read as _;
-                            let mut buffer = String::new();
-                            let _ = pipe.read_to_string(&mut buffer);
-                            buffer
-                        })
-                        .unwrap_or_default();
-                    if !status.success() {
-                        let detail = if stderr.trim().is_empty() {
-                            format!("readiness probe exited with {}", status.code().unwrap_or(-1))
-                        } else {
-                            format!(
-                                "readiness probe exited with {}: {}",
-                                status.code().unwrap_or(-1),
-                                stderr.trim()
-                            )
-                        };
-                        return failed_everywhere(snapshot, detail);
-                    }
-                    return apply_report(snapshot, &stdout);
-                }
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return failed_everywhere(snapshot, "readiness probe timed out".to_string());
-                    }
-                    thread::sleep(Duration::from_millis(100));
-                }
+            let result = match command.spawn() {
+                Ok(child) => child,
                 Err(error) => {
                     return failed_everywhere(
                         snapshot,
-                        format!("readiness probe failed to wait: {error}"),
+                        format!("readiness probe could not start: {error}"),
                     );
                 }
+            };
+            let deadline = Instant::now() + PROBE_DEADLINE;
+            let mut child = result;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        let stdout = child
+                            .stdout
+                            .take()
+                            .map(|mut pipe| {
+                                use std::io::Read as _;
+                                let mut buffer = String::new();
+                                let _ = pipe.read_to_string(&mut buffer);
+                                buffer
+                            })
+                            .unwrap_or_default();
+                        let stderr = child
+                            .stderr
+                            .take()
+                            .map(|mut pipe| {
+                                use std::io::Read as _;
+                                let mut buffer = String::new();
+                                let _ = pipe.read_to_string(&mut buffer);
+                                buffer
+                            })
+                            .unwrap_or_default();
+                        if !status.success() {
+                            let detail = if stderr.trim().is_empty() {
+                                format!(
+                                    "readiness probe exited with {}",
+                                    status.code().unwrap_or(-1)
+                                )
+                            } else {
+                                format!(
+                                    "readiness probe exited with {}: {}",
+                                    status.code().unwrap_or(-1),
+                                    stderr.trim()
+                                )
+                            };
+                            return failed_everywhere(snapshot, detail);
+                        }
+                        return apply_report(snapshot, &stdout);
+                    }
+                    Ok(None) => {
+                        if Instant::now() >= deadline {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return failed_everywhere(
+                                snapshot,
+                                "readiness probe timed out".to_string(),
+                            );
+                        }
+                        thread::sleep(Duration::from_millis(100));
+                    }
+                    Err(error) => {
+                        return failed_everywhere(
+                            snapshot,
+                            format!("readiness probe failed to wait: {error}"),
+                        );
+                    }
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 fn failed_everywhere(mut snapshot: ReadinessSnapshot, detail: String) -> ReadinessSnapshot {
@@ -570,7 +580,10 @@ mod tests {
         snapshot.recompute();
         assert!(snapshot.is_local_ready());
         assert!(!snapshot.is_public_ready());
-        assert!(!snapshot.is_ready(), "public readiness requires public protocol");
+        assert!(
+            !snapshot.is_ready(),
+            "public readiness requires public protocol"
+        );
     }
 
     #[test]
@@ -623,7 +636,10 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         let snapshot = scheduler.current();
-        assert_eq!(snapshot.generation, 7, "snapshot must be tagged with its generation");
+        assert_eq!(
+            snapshot.generation, 7,
+            "snapshot must be tagged with its generation"
+        );
         assert_eq!(
             snapshot.verified_revision,
             Some(11),
@@ -703,11 +719,14 @@ mod tests {
             "stale probe republished verified after stop"
         );
         assert_eq!(
-            snapshot.generation,
-            0,
+            snapshot.generation, 0,
             "published snapshot must belong to the invalidated/zero generation"
         );
-        assert_eq!(scheduler.generation(), 0, "generation must reset after stop");
+        assert_eq!(
+            scheduler.generation(),
+            0,
+            "generation must reset after stop"
+        );
     }
 
     #[test]
@@ -763,7 +782,10 @@ mod tests {
         );
         assert_eq!(applied.local_process.status, ProbeStatus::Verified);
         assert_eq!(applied.local_endpoint.status, ProbeStatus::Failed);
-        assert_eq!(applied.local_endpoint.detail.as_deref(), Some("local endpoint: ECONNREFUSED"));
+        assert_eq!(
+            applied.local_endpoint.detail.as_deref(),
+            Some("local endpoint: ECONNREFUSED")
+        );
         assert!(applied.local_process.checked_at.is_some());
         assert!(applied.local_protocol.status == ProbeStatus::Pending);
         assert!(applied.degraded);

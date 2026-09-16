@@ -79,7 +79,10 @@ pub fn executable_fingerprint() -> String {
     };
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(&bytes);
-    let hex = digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     hex.chars().take(12).collect()
 }
 
