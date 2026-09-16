@@ -29,7 +29,7 @@ pub enum ProbeStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeEntry {
-    pub kind: &'static str,
+    pub kind: String,
     pub status: ProbeStatus,
     pub checked_at: Option<String>,
     pub detail: Option<String>,
@@ -37,7 +37,7 @@ pub struct ProbeEntry {
 
 fn gate(kind: &'static str) -> ProbeEntry {
     ProbeEntry {
-        kind,
+        kind: kind.to_string(),
         status: ProbeStatus::Pending,
         checked_at: None,
         detail: None,
@@ -603,7 +603,7 @@ mod tests {
             let mut snapshot = prior.clone();
             if let Some(url) = &local_url {
                 snapshot.local_endpoint = ProbeEntry {
-                    kind: "localEndpoint",
+                    kind: "localEndpoint".to_string(),
                     status: ProbeStatus::Verified,
                     checked_at: Some(url.clone()),
                     detail: Some("connect ok".to_string()),

@@ -146,12 +146,90 @@ fn config_dir_override() -> Result<Option<PathBuf>, AppError> {
 /// Read settings without persisting anything. This is the observation path:
 /// status polling must never rewrite the settings file.
 pub fn load_settings(paths: &AppPaths) -> Result<Option<Settings>, AppError> {
+    Ok(load_settings_detailed(paths)?.map(|(settings, _)| settings))
+}
+
+/// Read settings, reporting whether the on-disk text had to be repaired to
+/// parse. The bool is `true` when the stored file was not itself valid JSON.
+/// Callers on a write-capable path use it to rewrite the file in canonical
+/// form; the observation path ignores it and never writes.
+pub fn load_settings_detailed(
+    paths: &AppPaths,
+) -> Result<Option<(Settings, bool)>, AppError> {
     if !paths.settings_path.exists() {
         return Ok(None);
     }
     let raw = fs::read_to_string(&paths.settings_path)?;
-    let settings: Settings = serde_json::from_str(&raw)?;
-    Ok(Some(settings))
+    let (settings, repaired) = parse_settings_text(&raw, &paths.settings_path)?;
+    Ok(Some((settings, repaired)))
+}
+
+/// Parse a settings document that may have been edited by hand.
+///
+/// Two corruptions are recoverable without guessing at the user's intent, and
+/// both are what a Windows text editor produces:
+///
+/// * a UTF-8 BOM in front of the opening brace, which `serde_json` rejects;
+/// * Windows paths pasted verbatim, where each separator is a single backslash
+///   rather than the doubled backslash JSON requires, so `\U` is read as an
+///   invalid escape sequence and the whole document fails to parse.
+///
+/// Repair is only attempted after a normal parse has already failed, so a file
+/// that is valid JSON is never reinterpreted. Recovering rather than falling
+/// back to defaults is what preserves the stable public URL: the zrok name and
+/// path token live in this file, and regenerating them would silently change
+/// the address the user has already shared.
+fn parse_settings_text(raw: &str, path: &Path) -> Result<(Settings, bool), AppError> {
+    let trimmed = raw.strip_prefix('\u{feff}').unwrap_or(raw);
+    if let Ok(settings) = serde_json::from_str::<Settings>(trimmed) {
+        // Stripping only a BOM still means the stored bytes were not valid JSON.
+        return Ok((settings, !std::ptr::eq(trimmed, raw)));
+    }
+
+    let repaired = escape_lone_backslashes(trimmed);
+    match serde_json::from_str::<Settings>(&repaired) {
+        Ok(settings) => Ok((settings, true)),
+        Err(error) => Err(AppError::new(
+            "settings_unreadable",
+            format!(
+                "The settings file at {} is not valid JSON and could not be repaired ({}). \
+                 Fix or remove the file; it holds the stable public URL, so it is not \
+                 replaced automatically.",
+                path.display(),
+                error
+            ),
+        )),
+    }
+}
+
+/// Within JSON string literals, double any backslash that does not begin a
+/// valid escape sequence. Text outside string literals is left untouched.
+fn escape_lone_backslashes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 16);
+    let mut chars = input.chars().peekable();
+    let mut in_string = false;
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => {
+                in_string = !in_string;
+                out.push(ch);
+            }
+            '\\' if in_string => match chars.peek().copied() {
+                // A valid escape: copy it through verbatim.
+                Some(next)
+                    if matches!(next, '"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') =>
+                {
+                    out.push(ch);
+                    out.push(next);
+                    chars.next();
+                }
+                // A lone separator backslash from a pasted Windows path: double it.
+                _ => out.push_str("\\\\"),
+            },
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Load existing settings, or create defaults on a genuine first run.
@@ -160,8 +238,17 @@ pub fn load_settings(paths: &AppPaths) -> Result<Option<Settings>, AppError> {
 /// replaced with `None`: it remains stored so the user does not lose their
 /// selection, but startup is blocked until the workspace is reachable again.
 pub fn load_or_create_settings(paths: &AppPaths) -> Result<Settings, AppError> {
-    if let Some(raw) = load_settings(paths)? {
-        return Ok(raw.normalize());
+    if let Some((raw, repaired)) = load_settings_detailed(paths)? {
+        let settings = raw.normalize();
+        if repaired {
+            // The stored file was not valid JSON but its contents were
+            // recovered intact. Rewrite it in canonical form here, on the
+            // write-capable path, so the repair happens once instead of on
+            // every read. The recovered identity is preserved, so the public
+            // URL does not change.
+            save_settings(paths, &settings)?;
+        }
+        return Ok(settings);
     }
 
     let settings = Settings::default();
@@ -542,6 +629,7 @@ mod tests {
     use super::{
         apply_launch_environment_overrides, effective_workspace_path, fresh_public_path_token,
         fresh_zrok_name, is_home_directory, load_or_create_settings, load_settings,
+        load_settings_detailed,
         normalize_windows_verbatim_prefix, redact_secrets, save_settings,
         validate_public_path_token, validate_zrok_name, AccessMode, AppPaths, Settings,
     };
@@ -549,6 +637,23 @@ mod tests {
     use std::{env, fs};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Per-test directory. Tests run in parallel, so each one needs its own
+    /// config dir; sharing a single path makes cleanup in one test delete the
+    /// fixtures of another.
+    fn named_test_paths(name: &str) -> AppPaths {
+        let root = env::temp_dir().join(format!(
+            "secret-tunnel-settings-test-{}-{}",
+            std::process::id(),
+            name
+        ));
+        AppPaths {
+            config_dir: root.clone(),
+            settings_path: root.join("settings.json"),
+            managed_config_path: root.join("gpt-repo-mcp.config.json"),
+            diagnostics_path: root.join("diagnostics.log"),
+        }
+    }
 
     fn test_paths() -> AppPaths {
         let root = env::temp_dir().join(format!(
@@ -783,5 +888,91 @@ mod tests {
         } else {
             env::remove_var(variable);
         }
+    }
+
+    /// A settings file saved by a Windows text editor keeps its identity: the
+    /// BOM and the single-backslash paths are repaired rather than discarded,
+    /// because discarding them would rotate the public URL.
+    #[test]
+    fn recovers_hand_edited_settings_without_changing_identity() {
+        let paths = named_test_paths("hand-edited");
+        fs::create_dir_all(&paths.config_dir).unwrap();
+        // A UTF-8 BOM plus Windows paths written with single backslashes:
+        // exactly what a hand-edited settings file looks like, and not
+        // parseable as JSON.
+        let hand_edited = format!(
+            "\u{feff}{}",
+            r#"{
+  "version": 1,
+  "workspacePath": "C:\Users\Me\Documents",
+  "accessMode": "read_write",
+  "zrokName": "gptmcpexamplename1",
+  "publicPathToken": "0123456789abcdef0123456789abcdef",
+  "gptRepoMcpPath": "C:\Users\Me\gpt-repo-mcp"
+}"#
+        );
+        assert!(
+            serde_json::from_str::<Settings>(&hand_edited).is_err(),
+            "fixture must be invalid JSON or the test proves nothing"
+        );
+        fs::write(&paths.settings_path, &hand_edited).unwrap();
+
+        let (settings, repaired) = load_settings_detailed(&paths).unwrap().unwrap();
+        assert!(repaired, "the stored bytes were not valid JSON");
+        assert_eq!(settings.zrok_name, "gptmcpexamplename1");
+        assert_eq!(settings.public_path_token, "0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            settings.workspace_path.as_deref(),
+            Some(r"C:\Users\Me\Documents")
+        );
+        fs::remove_dir_all(&paths.config_dir).ok();
+    }
+
+    /// Repairing must be a one-time migration, not something every read redoes.
+    #[test]
+    fn repaired_settings_are_rewritten_as_valid_json() {
+        let paths = named_test_paths("rewritten");
+        fs::create_dir_all(&paths.config_dir).unwrap();
+        let hand_edited = format!(
+            "\u{feff}{}",
+            r#"{"version":1,"zrokName":"gptmcpstable0001","publicPathToken":"0123456789abcdef0123456789abcdef","workspacePath":"C:\Users\Me"}"#
+        );
+        fs::write(&paths.settings_path, &hand_edited).unwrap();
+
+        let before = load_or_create_settings(&paths).unwrap();
+        let on_disk = fs::read_to_string(&paths.settings_path).unwrap();
+        assert!(!on_disk.starts_with('\u{feff}'), "BOM should be gone");
+        serde_json::from_str::<Settings>(&on_disk).expect("rewritten file must be valid JSON");
+
+        let (after, repaired) = load_settings_detailed(&paths).unwrap().unwrap();
+        assert!(!repaired, "a second read must not need repair");
+        assert_eq!(before.zrok_name, after.zrok_name);
+        assert_eq!(before.public_path_token, after.public_path_token);
+        fs::remove_dir_all(&paths.config_dir).ok();
+    }
+
+    /// Valid JSON must never be reinterpreted by the repair path.
+    #[test]
+    fn valid_settings_are_not_repaired() {
+        let paths = named_test_paths("valid");
+        fs::create_dir_all(&paths.config_dir).unwrap();
+        let settings = Settings::default();
+        save_settings(&paths, &settings).unwrap();
+        let (_, repaired) = load_settings_detailed(&paths).unwrap().unwrap();
+        assert!(!repaired);
+        fs::remove_dir_all(&paths.config_dir).ok();
+    }
+
+    /// Unrecoverable content must fail loudly and keep the file, because the
+    /// file is the only copy of the stable public URL.
+    #[test]
+    fn unrecoverable_settings_report_an_error_instead_of_resetting() {
+        let paths = named_test_paths("unrecoverable");
+        fs::create_dir_all(&paths.config_dir).unwrap();
+        fs::write(&paths.settings_path, "this is not json at all").unwrap();
+        let error = load_settings_detailed(&paths).unwrap_err();
+        assert_eq!(error.code, "settings_unreadable");
+        assert!(fs::read_to_string(&paths.settings_path).unwrap().contains("not json"));
+        fs::remove_dir_all(&paths.config_dir).ok();
     }
 }

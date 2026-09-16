@@ -1,5 +1,10 @@
 mod commands;
 mod diag;
+// UNFINISHED: the online-installer download helper references symbols that do
+// not exist and does not compile. It is kept behind an off-by-default feature
+// so it cannot break the application build, and it is not a shipped feature
+// until it is reworked into its own binary target.
+#[cfg(feature = "online-installer")]
 mod download_helper;
 mod error;
 mod lifecycle;
@@ -105,7 +110,16 @@ pub fn run() {
                     // Backend supervisor schedules retries while desired_running
                     // is true; it is NOT driven by webview status polling.
                     state.start_supervisor();
-                    let _ = state.start_if_configured();
+                    // Surface a failed launch start instead of discarding it:
+                    // an unreadable settings file or an invalid workspace used
+                    // to leave the window open with no services and no reason
+                    // shown anywhere.
+                    if let Err(error) = state.start_if_configured() {
+                        state.push_app_log(format!(
+                            "Auto-start failed: {}: {}",
+                            error.code, error.message
+                        ));
+                    }
                 }
             });
             Ok(())

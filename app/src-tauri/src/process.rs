@@ -89,6 +89,10 @@ fn install_readiness_probe(
         bundled_executable("node").unwrap_or_else(|| PathBuf::from("node"));
     let runtime_provider = runtime.clone();
     let paths_provider = paths.clone();
+    // The provider closure is `move` and re-runs on every readiness tick, so it
+    // needs its own copies; the originals are handed to `real_probe_fn` below.
+    let probe_script_for_context = probe_script_path.clone();
+    let bundled_node_for_context = bundled_node.clone();
     let provider: ContextProvider = std::sync::Arc::new(move || {
         let settings = load_settings(&paths_provider)
             .ok()
@@ -131,8 +135,8 @@ fn install_readiness_probe(
             local_mcp_url: Some(local_mcp_url),
             public_url,
             public_mcp_url: public_mcp_url,
-            probe_script_path: probe_script_path.clone(),
-            bundled_node: bundled_node.clone(),
+            probe_script_path: probe_script_for_context.clone(),
+            bundled_node: bundled_node_for_context.clone(),
         }
     });
     readiness.install_probe(provider, real_probe_fn(probe_script_path, bundled_node));
