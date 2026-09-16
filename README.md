@@ -3,12 +3,29 @@
 A tiny Tauri desktop app that keeps one local `gpt-repo-mcp` folder share available to
 ChatGPT through a stable zrok URL.
 
+## Credits
+
+The idea, and the component that does the actual work, come from
+**[gpt-repo-mcp](https://github.com/CAHN91/gpt-repo-mcp)** by **Promptiva AB** (MIT).
+That project is the MCP server which exposes a folder to ChatGPT and enforces what may
+be read or written. Secret Tunnel is the launcher and tunnel wrapped around it: it
+starts the server, publishes it through zrok, and gives it a desktop UI.
+
+A copy of that server is vendored in [`app/vendor/gpt-repo-mcp/`](app/vendor/gpt-repo-mcp/)
+under its original MIT licence, with one change (honouring `GPT_REPO_READ_ONLY_SURFACE`)
+that is offered back to the upstream project. See
+[`VENDOR.md`](app/vendor/gpt-repo-mcp/VENDOR.md) for the exact provenance.
+
+The tunnel is provided by [zrok](https://zrok.io/), built on
+[OpenZiti](https://openziti.io/) by NetFoundry.
+
 ## Repository Layout
 
 | Path | Contents |
 | --- | --- |
 | `For-AI/` | Project context, constraints, and AI orchestration protocols (start here). |
 | `app/` | The Tauri application source (frontend, Rust backend, build scripts). |
+| `app/vendor/gpt-repo-mcp/` | Vendored MCP server (MIT, Promptiva AB) — see its `VENDOR.md`. |
 | `outputs/` | Build outputs: installers (kept locally, gitignored) and committed checksums. |
 
 ## Quick Facts

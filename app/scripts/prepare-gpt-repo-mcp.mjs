@@ -17,8 +17,28 @@ const requirePinnedSource = process.env.SECRET_TUNNEL_REQUIRE_PINNED_MCP_SOURCE 
 const source = prepareSourceDir();
 const sourceDir = source.dir;
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const sourceGitHead = gitOutput(sourceDir, ["rev-parse", "HEAD"]);
-const sourceDirty = (gitOutput(sourceDir, ["status", "--porcelain"]) ?? "").trim().length > 0;
+
+// A vendored copy lives inside this repository, so `git` run in that directory
+// answers about *this* project, not the server's own history: HEAD would be the
+// launcher's commit and `status --porcelain` would report unrelated edits
+// elsewhere in the tree. Provenance therefore comes from the vendor manifest,
+// and integrity is tracked by this repository's own history rather than by a
+// dirty-checkout probe that cannot mean anything here.
+const vendorManifest =
+  source.kind === "vendored-source" ? await readJson(join(sourceDir, "VENDOR.json")) : null;
+if (source.kind === "vendored-source" && !vendorManifest) {
+  throw new Error(
+    "Vendored gpt-repo-mcp is missing VENDOR.json; the bundled server's origin cannot be recorded.",
+  );
+}
+
+const effectiveRepoUrl = vendorManifest?.forkRepoUrl ?? sourceRepoUrl;
+const sourceGitHead = vendorManifest
+  ? (vendorManifest.forkCommit ?? vendorManifest.upstreamCommit ?? null)
+  : gitOutput(sourceDir, ["rev-parse", "HEAD"]);
+const sourceDirty = vendorManifest
+  ? false
+  : (gitOutput(sourceDir, ["status", "--porcelain"]) ?? "").trim().length > 0;
 
 validateReleaseSource();
 
@@ -39,7 +59,7 @@ if (
   currentMarker?.serverHash === serverHash &&
   currentMarker?.lockHash === lockHash &&
   currentMarker?.sourceKind === source.kind &&
-  currentMarker?.sourceRepoUrl === sourceRepoUrl &&
+  currentMarker?.sourceRepoUrl === effectiveRepoUrl &&
   currentMarker?.sourceRepoRef === (sourceRepoRef ?? null) &&
   currentMarker?.sourceGitHead === sourceGitHead &&
   currentMarker?.sourceDirty === sourceDirty &&
@@ -66,7 +86,10 @@ await writeFile(
     serverHash,
     lockHash,
     sourceKind: source.kind,
-    sourceRepoUrl,
+    sourceRepoUrl: effectiveRepoUrl,
+    upstreamRepoUrl: vendorManifest?.upstreamRepoUrl ?? null,
+    upstreamCommit: vendorManifest?.upstreamCommit ?? null,
+    license: vendorManifest?.license ?? null,
     sourceRepoRef: sourceRepoRef ?? null,
     sourceGitHead,
     sourceDirty,
@@ -78,13 +101,20 @@ console.log(`Prepared bundled gpt-repo-mcp runtime at ${outputDir}`);
 
 function prepareSourceDir() {
   const explicit = process.env.GPT_REPO_MCP_SOURCE_DIR;
+  // The vendored copy wins over a sibling checkout on purpose. Preferring a
+  // developer's working tree is what let a verified local build contain an
+  // uncommitted fix that no clean clone reproduced, so the default source is
+  // the one recorded in this repository. Point GPT_REPO_MCP_SOURCE_DIR at a
+  // checkout to iterate on the server deliberately.
   const candidates = [
     explicit ? { dir: resolve(explicit), kind: "explicit-local-source" } : null,
+    { dir: join(rootDir, "vendor", "gpt-repo-mcp"), kind: "vendored-source" },
     { dir: resolve(rootDir, "..", "gpt-repo-mcp"), kind: "sibling-local-source" },
   ].filter(Boolean);
 
   for (const candidate of candidates) {
     if (existsSync(join(candidate.dir, "package.json")) && existsSync(join(candidate.dir, "src"))) {
+      console.log(`Using ${candidate.kind} at ${candidate.dir}`);
       return candidate;
     }
   }

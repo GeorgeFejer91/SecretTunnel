@@ -1,0 +1,23 @@
+{
+  "name": "gpt-repo-mcp",
+  "upstreamRepoUrl": "https://github.com/CAHN91/gpt-repo-mcp",
+  "upstreamCommit": "986f2135f00959f8e0d214ed8d173a7054f4cea1",
+  "forkRepoUrl": "https://github.com/GeorgeFejer91/gpt-repo-mcp",
+  "forkBranch": "read-only-tool-surface",
+  "forkCommit": "93df9e2aa6cc4163651a52143409ac6912985993",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 Promptiva AB",
+  "vendoredAt": "2026-09-16",
+  "modifications": [
+    "Registration honours GPT_REPO_READ_ONLY_SURFACE=1 by filtering the tool catalogue to read-only tools, so write-capable tools are never registered and cannot appear in tools/list."
+  ],
+  "excludedFromVendor": [
+    "node_modules",
+    "dist",
+    "tests",
+    "docs",
+    "scripts",
+    "security",
+    ".git"
+  ]
+}
