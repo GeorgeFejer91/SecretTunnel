@@ -53,16 +53,24 @@
         width: min(420px, 100%);
         height: clamp(34px, 8vw, 46px);
         margin: 0 auto 10px;
-        /* Seamless loop, identical to the app: the palette is a palindrome laid
-           out twice across an image two container-widths wide, so shifting by
-           one container width advances exactly one cycle and the last frame
-           matches the first instead of snapping red back to teal. */
+        /* Seamless loop, identical to the app: a closed colour cycle with every
+           step the same width, so the wrap from the last colour back to the
+           first blends at the same rate as every other transition rather than
+           cutting. Laid out twice across an image two container-widths wide, so
+           one container width of travel is exactly one cycle. The oklab
+           declaration keeps the red-to-teal leg vivid; a browser that cannot
+           parse it falls back to the sRGB gradient above. */
         background: linear-gradient(
           90deg,
-          #0f766e 0%, #14b8a6 6.25%, #2563eb 12.5%, #f59e0b 18.75%, #dc2626 25%,
-          #f59e0b 31.25%, #2563eb 37.5%, #14b8a6 43.75%, #0f766e 50%,
-          #14b8a6 56.25%, #2563eb 62.5%, #f59e0b 68.75%, #dc2626 75%,
-          #f59e0b 81.25%, #2563eb 87.5%, #14b8a6 93.75%, #0f766e 100%
+          #0f766e 0%, #14b8a6 10%, #2563eb 20%, #f59e0b 30%, #dc2626 40%,
+          #0f766e 50%, #14b8a6 60%, #2563eb 70%, #f59e0b 80%, #dc2626 90%,
+          #0f766e 100%
+        );
+        background: linear-gradient(
+          90deg in oklab,
+          #0f766e 0%, #14b8a6 10%, #2563eb 20%, #f59e0b 30%, #dc2626 40%,
+          #0f766e 50%, #14b8a6 60%, #2563eb 70%, #f59e0b 80%, #dc2626 90%,
+          #0f766e 100%
         );
         background-size: 200% 100%;
         animation: title-elements 4800ms linear infinite;

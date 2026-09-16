@@ -721,7 +721,9 @@ mod tests {
 
     #[test]
     fn detects_configured_home_directory() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = env::temp_dir().join(format!("secret-tunnel-home-test-{}", std::process::id()));
         fs::create_dir_all(&home).unwrap();
         let previous = env::var_os("USERPROFILE");
@@ -737,7 +739,9 @@ mod tests {
 
     #[test]
     fn preserves_unsafe_workspace_in_stored_settings() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = env::temp_dir().join(format!(
             "secret-tunnel-settings-test-{}",
             std::process::id()
@@ -788,7 +792,9 @@ mod tests {
 
     #[test]
     fn preserves_unavailable_workspace_in_stored_settings() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = env::temp_dir().join(format!(
             "secret-tunnel-unavailable-test-{}",
             std::process::id()
@@ -799,7 +805,14 @@ mod tests {
             managed_config_path: root.join("gpt-repo-mcp.config.json"),
             diagnostics_path: root.join("diagnostics.log"),
         };
-        let missing = r"C:\nonexistent\fake\folder";
+        // Must be absolute for the platform under test: a Windows-style path is
+        // merely *relative* on Unix, so validation would reject it as
+        // invalid_folder long before it could report folder_unavailable.
+        let missing = if cfg!(windows) {
+            r"C:\nonexistent\fake\folder"
+        } else {
+            "/nonexistent/fake/folder"
+        };
         let settings = Settings {
             workspace_path: Some(missing.to_string()),
             ..Settings::default()
@@ -825,7 +838,9 @@ mod tests {
 
     #[test]
     fn applies_launch_environment_overrides_in_memory_only() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = env::temp_dir().join(format!(
             "secret-tunnel-launch-env-test-{}",
             std::process::id()

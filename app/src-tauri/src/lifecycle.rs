@@ -868,7 +868,17 @@ mod tests {
             &coordinator,
         );
         assert_eq!(record.starts.lock().unwrap().len(), 1);
-        assert_eq!(record.stops.lock().unwrap().len(), 1);
+        // Cleanup runs at least once, but not a fixed number of times: the
+        // cancelled start worker may clean up its own partial attempt before the
+        // Stop worker confirms. Asserting an exact count made this test depend
+        // on thread scheduling, and it failed intermittently on CI with 2 != 1.
+        // Cleanup is idempotent, so what matters is that it ran and that nothing
+        // is left running or wanted.
+        assert!(
+            !record.stops.lock().unwrap().is_empty(),
+            "cleanup must have run after Stop"
+        );
+        assert_eq!(coordinator.effective_state(), LifecycleState::Stopped);
         assert!(!coordinator.desired_running());
     }
 

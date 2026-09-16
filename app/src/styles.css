@@ -193,30 +193,28 @@ body.running.flow-ready .hero-art-flow {
   mask: url("/secret-tunnel-title.svg") center / contain no-repeat;
 }
 
-/* Seamless loop. The palette is a palindrome, teal through red and back, laid
-   out twice across an image two container-widths wide. Shifting by exactly one
-   container width therefore advances exactly one whole cycle, so the last frame
-   is identical to the first and there is no snap. The previous version ran a
-   one-way ramp that jumped from red straight back to teal at the loop point. */
+/* Seamless loop with an evenly paced palette. The colours form a closed cycle -
+   teal, blue, amber, red and back to teal - with every step the same width, so
+   the wrap from the last colour to the first blends at exactly the same rate as
+   every other transition instead of cutting. The cycle is laid out twice across
+   an image two container-widths wide, so shifting by one container width
+   advances exactly one cycle and the final frame equals the first.
+
+   The second declaration interpolates in oklab, which keeps the red-to-teal leg
+   vivid rather than passing through the grey-brown that sRGB mixing produces.
+   A webview too old to parse it simply ignores that line and keeps the sRGB
+   gradient above, so the title can never end up unpainted. */
 body.running .title-art {
   background: linear-gradient(
     90deg,
-    #0f766e 0%,
-    #14b8a6 6.25%,
-    #2563eb 12.5%,
-    #f59e0b 18.75%,
-    #dc2626 25%,
-    #f59e0b 31.25%,
-    #2563eb 37.5%,
-    #14b8a6 43.75%,
-    #0f766e 50%,
-    #14b8a6 56.25%,
-    #2563eb 62.5%,
-    #f59e0b 68.75%,
-    #dc2626 75%,
-    #f59e0b 81.25%,
-    #2563eb 87.5%,
-    #14b8a6 93.75%,
+    #0f766e 0%, #14b8a6 10%, #2563eb 20%, #f59e0b 30%, #dc2626 40%,
+    #0f766e 50%, #14b8a6 60%, #2563eb 70%, #f59e0b 80%, #dc2626 90%,
+    #0f766e 100%
+  );
+  background: linear-gradient(
+    90deg in oklab,
+    #0f766e 0%, #14b8a6 10%, #2563eb 20%, #f59e0b 30%, #dc2626 40%,
+    #0f766e 50%, #14b8a6 60%, #2563eb 70%, #f59e0b 80%, #dc2626 90%,
     #0f766e 100%
   );
   background-size: 200% 100%;

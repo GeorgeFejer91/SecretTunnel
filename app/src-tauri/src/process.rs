@@ -2085,7 +2085,9 @@ To create a local environment use the zrok2 enable command.
 
     #[test]
     fn detects_bundled_mcp_runtime_from_resource_dir() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = env::temp_dir().join(format!(
             "secret-tunnel-mcp-runtime-test-{}",
             std::process::id()
@@ -2108,7 +2110,9 @@ To create a local environment use the zrok2 enable command.
 
     #[test]
     fn bundled_executable_lookup_does_not_use_path() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let root = env::temp_dir().join(format!("secret-tunnel-path-test-{}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("secret-tunnel-fake-tool.exe"), "").unwrap();
@@ -2126,7 +2130,9 @@ To create a local environment use the zrok2 enable command.
 
     #[test]
     fn reads_zrok_enable_token_from_launch_environment() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         clear_zrok_enable_token_environment();
         assert_eq!(zrok_enable_token_from_environment(), None);
 
@@ -2148,7 +2154,9 @@ To create a local environment use the zrok2 enable command.
 
     #[test]
     fn reads_status_probe_path_from_launch_environment() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = env::var_os("SECRET_TUNNEL_STATUS_FILE");
         env::remove_var("SECRET_TUNNEL_STATUS_FILE");
         assert_eq!(status_probe_path_from_environment(), None);
