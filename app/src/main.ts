@@ -24,15 +24,23 @@ type Status = {
   running: boolean;
   autostartEnabled: boolean;
   zrokInstalled: boolean;
+  zrokEnabled: boolean;
   gptRepoMcpFound: boolean;
   logs: LogLine[];
 };
 
+const ZROK_TOKEN_PAGE_URL = "https://myzrok.io";
+
 const elements = {
-  statusLine: mustElement<HTMLParagraphElement>("status-line"),
-  toggleServices: mustElement<HTMLButtonElement>("toggle-services"),
+  statusLine: mustElement<HTMLElement>("status-line"),
+  flowArt: mustElement<HTMLImageElement>("hero-flow-art"),
   mcpUrl: mustElement<HTMLInputElement>("mcp-url"),
   copyUrl: mustElement<HTMLButtonElement>("copy-url"),
+  regenerateUrl: mustElement<HTMLButtonElement>("regenerate-url"),
+  zrokSetup: mustElement<HTMLElement>("zrok-setup"),
+  zrokToken: mustElement<HTMLInputElement>("zrok-token"),
+  enableZrok: mustElement<HTMLButtonElement>("enable-zrok"),
+  getTokenLink: mustElement<HTMLAnchorElement>("get-token-link"),
   folderPicker: mustElement<HTMLButtonElement>("folder-picker"),
   folderPath: mustElement<HTMLInputElement>("folder-path"),
   pasteFolder: mustElement<HTMLButtonElement>("paste-folder"),
@@ -43,7 +51,6 @@ const elements = {
   modeWrite: mustElement<HTMLButtonElement>("mode-write"),
   zrokState: mustElement<HTMLElement>("zrok-state"),
   mcpState: mustElement<HTMLElement>("mcp-state"),
-  logs: mustElement<HTMLPreElement>("logs"),
 };
 
 let currentStatus: Status | null = null;
@@ -56,12 +63,18 @@ window.addEventListener("DOMContentLoaded", () => {
 });
 
 function wireEvents() {
-  elements.toggleServices.addEventListener("click", () => {
-    if (!currentStatus) return;
-    runStatusCommand(currentStatus.running ? "stop_services" : "start_services");
+  elements.flowArt.addEventListener("load", () => {
+    document.body.classList.toggle("flow-ready", currentStatus?.running ?? false);
   });
-
   elements.copyUrl.addEventListener("click", () => copyText(elements.mcpUrl.value));
+  elements.regenerateUrl.addEventListener("click", () =>
+    runStatusCommand("regenerate_mcp_url"),
+  );
+  elements.enableZrok.addEventListener("click", enableZrok);
+  elements.getTokenLink.addEventListener("click", openZrokTokenPage);
+  elements.zrokToken.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") enableZrok();
+  });
   elements.folderPicker.addEventListener("click", chooseFolder);
   elements.copyFolder.addEventListener("click", () => copyText(elements.folderPath.value));
   elements.pasteFolder.addEventListener("click", pasteFolder);
@@ -120,8 +133,8 @@ async function withBusy(work: () => Promise<void>) {
   try {
     await work();
   } catch (error) {
-    renderError(error);
     await refresh();
+    renderError(error);
   } finally {
     busy = false;
     setControlsDisabled(false);
@@ -144,16 +157,59 @@ function render(status: Status) {
   elements.folderPath.value = status.settings.workspacePath ?? "";
   elements.autostart.checked = status.autostartEnabled;
   renderAccessMode(status.settings.accessMode);
-  elements.toggleServices.textContent = status.running ? "Stop" : "Start";
-  elements.toggleServices.classList.toggle("danger", status.running);
-  elements.zrokState.textContent = status.zrokInstalled ? "Ready" : "Missing";
+  document.body.classList.toggle("running", status.running);
+  document.body.classList.toggle("needs-folder", !status.settings.workspacePath);
+  renderFlowArt(status.running);
+  const startupIssue = latestStartupIssue(status);
+  const zrokNeedsEnable = status.zrokInstalled && !status.zrokEnabled;
+  document.body.classList.toggle("zrok-needs-enable", zrokNeedsEnable);
+  elements.zrokSetup.hidden = !zrokNeedsEnable;
+  elements.zrokState.textContent = status.zrokInstalled
+    ? zrokNeedsEnable
+      ? "Needs enable"
+      : "Ready"
+    : "Missing";
   elements.mcpState.textContent = status.gptRepoMcpFound ? "Ready" : "Missing";
   const mode = status.settings.accessMode === "read_write" ? "read+write" : "read-only";
-  setStatusText(status.running ? `Running, ${mode}` : `Stopped, ${mode}`);
-  elements.logs.textContent = status.logs
-    .slice(-8)
-    .map((entry) => `[${entry.source}] ${entry.line}`)
-    .join("\n");
+  setStatusText(status.running ? `Running, ${mode}` : startupIssue ?? `Stopped, ${mode}`);
+}
+
+async function openZrokTokenPage() {
+  try {
+    await invoke("open_url", { url: ZROK_TOKEN_PAGE_URL });
+  } catch (error) {
+    renderError(error);
+  }
+}
+
+async function enableZrok() {
+  const token = elements.zrokToken.value.trim();
+  if (!token) {
+    setStatusText("Paste zrok token first.");
+    elements.zrokToken.focus();
+    return;
+  }
+
+  await withBusy(async () => {
+    render(await invoke<Status>("enable_zrok", { token }));
+    elements.zrokToken.value = "";
+  });
+}
+
+function renderFlowArt(running: boolean) {
+  const src = elements.flowArt.dataset.src;
+  if (!src) return;
+
+  if (running) {
+    if (!elements.flowArt.getAttribute("src")) {
+      document.body.classList.remove("flow-ready");
+      elements.flowArt.src = src;
+    }
+    return;
+  }
+
+  elements.flowArt.removeAttribute("src");
+  document.body.classList.remove("flow-ready");
 }
 
 function renderAccessMode(mode: Status["settings"]["accessMode"]) {
@@ -164,6 +220,21 @@ function renderAccessMode(mode: Status["settings"]["accessMode"]) {
   elements.modeWrite.setAttribute("aria-pressed", String(writeEnabled));
 }
 
+function latestStartupIssue(status: Status): string | null {
+  if (status.running || !status.settings.workspacePath) return null;
+  if (status.zrokInstalled && !status.zrokEnabled) return "zrok needs enable";
+
+  const failedStart = status.logs
+    .slice()
+    .reverse()
+    .find((entry) => entry.line.startsWith("Auto-start failed:"));
+  if (!failedStart) return null;
+
+  const message = failedStart.line.replace("Auto-start failed:", "").trim();
+  if (!message) return "Setup needs attention";
+  return message;
+}
+
 function renderError(error: unknown) {
   const appError = error as Partial<AppError>;
   setStatusText(appError.message ?? String(error));
@@ -171,12 +242,14 @@ function renderError(error: unknown) {
 
 function setControlsDisabled(disabled: boolean) {
   [
-    elements.toggleServices,
     elements.folderPicker,
+    elements.zrokToken,
+    elements.enableZrok,
     elements.pasteFolder,
     elements.copyFolder,
     elements.saveFolder,
     elements.copyUrl,
+    elements.regenerateUrl,
     elements.autostart,
     elements.modeRead,
     elements.modeWrite,

@@ -10,28 +10,72 @@
 
   <body>
     <main class="shell">
-      <section class="row topbar">
-        <div class="brand">
-          <div class="tunnel-mark" aria-hidden="true">
-            <span class="tunnel-ring ring-one"></span>
-            <span class="tunnel-ring ring-two"></span>
-            <span class="tunnel-ring ring-three"></span>
-            <span class="tunnel-glow glow-one"></span>
-            <span class="tunnel-glow glow-two"></span>
+      <section class="hero">
+        <img
+          class="hero-art hero-art-static"
+          src="/secret-tunnel-cloud.svg"
+          alt="Local computer connected to a cloud through a tunnel"
+        />
+        <img
+          id="hero-flow-art"
+          class="hero-art hero-art-flow"
+          data-src="/secret-tunnel-flow.svg"
+          alt=""
+          aria-hidden="true"
+        />
+        <div class="hero-main">
+          <div class="hero-heading">
+            <div class="hero-copy">
+              <h1 class="sr-only">Secret Tunnel</h1>
+              <div class="title-art" role="img" aria-label="Secret Tunnel"></div>
+              <p class="tagline">Through the mountain! Secret, secret, secret, secret tunnel!</p>
+            </div>
           </div>
-          <div>
-            <h1>Secret Tunnel</h1>
-            <p id="status-line">Loading</p>
+          <div class="hero-controls">
+            <label class="switch-row">
+              <span>Open at startup</span>
+              <input id="autostart" type="checkbox" />
+              <span class="switch" aria-hidden="true"></span>
+            </label>
+            <div class="mode-control">
+              <span id="access-mode-label" class="control-label">GPT tools</span>
+              <div class="segmented" role="group" aria-labelledby="access-mode-label">
+                <button id="mode-read" class="segment" type="button" aria-pressed="true">Read</button>
+                <button id="mode-write" class="segment" type="button" aria-pressed="false">Read+write</button>
+              </div>
+            </div>
           </div>
         </div>
-        <button id="toggle-services" type="button">Start</button>
       </section>
 
       <section class="section">
-        <label for="mcp-url">Permanent MCP address</label>
+        <label for="mcp-url">MCP Address</label>
         <div class="copy-row">
           <input id="mcp-url" readonly spellcheck="false" />
           <button id="copy-url" type="button">Copy</button>
+          <button
+            id="regenerate-url"
+            class="icon-button"
+            type="button"
+            title="Generate new URL"
+            aria-label="Generate new URL"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+              <path d="M21 3v5h-5" />
+              <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+              <path d="M8 16H3v5" />
+            </svg>
+          </button>
         </div>
       </section>
 
@@ -48,25 +92,24 @@
         </div>
       </section>
 
-      <section class="section controls">
-        <label class="check">
-          <input id="autostart" type="checkbox" />
-          <span>Open app at startup</span>
-        </label>
-        <div class="mode-control">
-          <span id="access-mode-label" class="control-label">GPT tools</span>
-          <div class="segmented" role="group" aria-labelledby="access-mode-label">
-            <button id="mode-read" class="segment" type="button" aria-pressed="true">Read</button>
-            <button id="mode-write" class="segment" type="button" aria-pressed="false">Read+write</button>
-          </div>
+      <section id="zrok-setup" class="section zrok-setup" hidden>
+        <label for="zrok-token">zrok token</label>
+        <div class="copy-row">
+          <input id="zrok-token" type="password" autocomplete="off" spellcheck="false" />
+          <button id="enable-zrok" type="button">Enable</button>
         </div>
+        <p class="zrok-hint"><a id="get-token-link" href="#">Get token</a></p>
       </section>
 
       <section class="notice">
-        Keep this app open while ChatGPT uses the MCP. Only expose a project folder you are comfortable making reachable through the public tunnel. Do not select a drive root, home folder, or system folder.
+        Keep this app open while ChatGPT uses this folder. Pick a project folder only; never a drive root, home folder, or system folder.
       </section>
 
       <section class="section diagnostics">
+        <div class="diag-row">
+          <span>Status</span>
+          <strong id="status-line">Loading</strong>
+        </div>
         <div class="diag-row">
           <span>zrok2</span>
           <strong id="zrok-state">Checking</strong>
@@ -75,7 +118,6 @@
           <span>gpt-repo-mcp</span>
           <strong id="mcp-state">Checking</strong>
         </div>
-        <pre id="logs" aria-live="polite"></pre>
       </section>
     </main>
   </body>

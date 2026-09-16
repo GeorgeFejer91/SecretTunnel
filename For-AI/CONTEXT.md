@@ -30,7 +30,7 @@ When started, the app:
 The ChatGPT-facing URL is:
 
 ```text
-https://<zrok-name>.share.zrok.io/t/<fixed-token>/mcp
+https://<zrok-name>.shares.zrok.io/t/<fixed-token>/mcp
 ```
 
 The zrok name and MCP path token are stored locally so the address stays stable.
@@ -54,7 +54,7 @@ Source of truth: `app/src-tauri/src/settings.rs`, `commands.rs`, `process.rs`.
   `allow_non_git=true`, write globs allowing everything except `.git/**`, `.env*`,
   `**/*.pem`, `**/*.key`, `max_bytes_per_write=1048576`. `operations.enabled=false`.
 - **Limits**: `max_files=50`, `max_bytes_per_file=128000`, `max_total_bytes=750000`.
-- **Stable URL**: `https://<name>.share.zrok.io/t/<token>/mcp` (see `mcp_url`).
+- **Stable URL**: `https://<name>.shares.zrok.io/t/<token>/mcp` (see `mcp_url`; the zrok v2 SaaS public frontend is `shares.zrok.io`, plural).
 - **Default gpt-repo-mcp path**: `%USERPROFILE%\Documents\GitHub\gpt-repo-mcp`.
 
 ## External Dependencies (bundled at build time, not in git)

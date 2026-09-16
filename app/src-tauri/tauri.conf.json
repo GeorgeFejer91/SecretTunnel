@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.georgefejer.chatgpt-local-mcp-launcher",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run prepare:runtime && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run prepare:runtime && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -14,11 +14,13 @@
     "windows": [
       {
         "title": "Secret Tunnel",
-        "width": 560,
-        "height": 580,
-        "minWidth": 420,
-        "minHeight": 540,
-        "resizable": true
+        "width": 580,
+        "height": 560,
+        "minWidth": 580,
+        "minHeight": 560,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true
       }
     ],
     "security": {
@@ -28,12 +30,22 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": [
+      "binaries/",
+      "resources/"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      }
+    }
   }
 }

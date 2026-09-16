@@ -10,6 +10,7 @@ use tauri_plugin_autostart::ManagerExt;
 
 #[tauri::command]
 pub fn get_status(app: AppHandle, state: State<'_, AppState>) -> Result<StatusDto, AppError> {
+    state.request_autostart_if_configured()?;
     state.snapshot(autostart_enabled(&app))
 }
 
@@ -25,7 +26,13 @@ pub fn choose_workspace_folder(
     let mut settings = load_or_create_settings(&state.paths)?;
     settings.workspace_path = Some(canonical);
     save_settings(&state.paths, &settings)?;
+    sync_services_after_settings_change(&state)?;
     Ok(Some(state.snapshot(autostart_enabled(&app))?))
+}
+
+#[tauri::command]
+pub fn open_url(url: String) -> Result<(), AppError> {
+    crate::process::open_in_browser(&url)
 }
 
 #[tauri::command]
@@ -38,6 +45,7 @@ pub fn set_workspace_path(
     let mut settings = load_or_create_settings(&state.paths)?;
     settings.workspace_path = Some(canonical);
     save_settings(&state.paths, &settings)?;
+    sync_services_after_settings_change(&state)?;
     state.snapshot(autostart_enabled(&app))
 }
 
@@ -51,6 +59,7 @@ pub fn set_access_mode(
     let mut settings = load_or_create_settings(&state.paths)?;
     settings.access_mode = access_mode;
     save_settings(&state.paths, &settings)?;
+    sync_services_after_settings_change(&state)?;
     state.snapshot(autostart_enabled(&app))
 }
 
@@ -61,6 +70,29 @@ pub fn set_autostart(
     enabled: bool,
 ) -> Result<StatusDto, AppError> {
     set_autostart_enabled(&app, enabled)?;
+    if enabled {
+        let _ = state.start_if_configured()?;
+    }
+    state.snapshot(autostart_enabled(&app))
+}
+
+#[tauri::command]
+pub fn regenerate_mcp_url(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<StatusDto, AppError> {
+    state.regenerate_mcp_url()?;
+    state.snapshot(autostart_enabled(&app))
+}
+
+#[tauri::command]
+pub fn enable_zrok(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    token: String,
+) -> Result<StatusDto, AppError> {
+    state.enable_zrok(token)?;
+    let _ = state.start_if_configured()?;
     state.snapshot(autostart_enabled(&app))
 }
 
@@ -106,4 +138,13 @@ fn set_autostart_enabled(_app: &AppHandle, _enabled: bool) -> Result<(), AppErro
         "autostart_unavailable",
         "Autostart is unavailable on this platform.",
     ))
+}
+
+fn sync_services_after_settings_change(state: &AppState) -> Result<(), AppError> {
+    if state.is_running()? {
+        let _ = state.restart_if_configured()?;
+    } else {
+        let _ = state.start_if_configured()?;
+    }
+    Ok(())
 }

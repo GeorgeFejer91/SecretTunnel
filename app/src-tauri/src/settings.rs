@@ -2,6 +2,7 @@ use crate::error::AppError;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -61,6 +62,9 @@ impl Settings {
         if self.version == 0 {
             self.version = default_version();
         }
+        self.workspace_path = self
+            .workspace_path
+            .map(|path| normalize_windows_verbatim_prefix(&path));
         if self.zrok_name.trim().is_empty() {
             self.zrok_name = default_zrok_name();
         }
@@ -102,7 +106,10 @@ pub fn load_or_create_settings(paths: &AppPaths) -> Result<Settings, AppError> {
     if paths.settings_path.exists() {
         let raw = fs::read_to_string(&paths.settings_path)?;
         let settings: Settings = serde_json::from_str(&raw)?;
-        let normalized = settings.normalize();
+        let mut normalized = settings.normalize();
+        if let Some(path) = normalized.workspace_path.clone() {
+            normalized.workspace_path = validate_workspace_path(&path).ok();
+        }
         save_settings(paths, &normalized)?;
         return Ok(normalized);
     }
@@ -120,6 +127,33 @@ pub fn save_settings(paths: &AppPaths, settings: &Settings) -> Result<(), AppErr
     fs::write(&tmp, serde_json::to_vec_pretty(settings)?)?;
     fs::rename(tmp, &paths.settings_path)?;
     Ok(())
+}
+
+pub fn apply_launch_environment_overrides(paths: &AppPaths) -> Result<bool, AppError> {
+    let mut settings = load_or_create_settings(paths)?;
+    let mut changed = false;
+
+    if let Some(path) = launch_env("SECRET_TUNNEL_WORKSPACE_PATH") {
+        settings.workspace_path = Some(validate_workspace_path(&path)?);
+        changed = true;
+    }
+    if let Some(mode) = launch_env("SECRET_TUNNEL_ACCESS_MODE") {
+        settings.access_mode = AccessMode::parse(&mode)?;
+        changed = true;
+    }
+    if let Some(name) = launch_env("SECRET_TUNNEL_ZROK_NAME") {
+        settings.zrok_name = validate_zrok_name(&name)?;
+        changed = true;
+    }
+    if let Some(token) = launch_env("SECRET_TUNNEL_PUBLIC_PATH_TOKEN") {
+        settings.public_path_token = validate_public_path_token(&token)?;
+        changed = true;
+    }
+
+    if changed {
+        save_settings(paths, &settings)?;
+    }
+    Ok(changed)
 }
 
 pub fn validate_zrok_name(value: &str) -> Result<String, AppError> {
@@ -146,6 +180,26 @@ pub fn validate_zrok_name(value: &str) -> Result<String, AppError> {
         ));
     }
     Ok(normalized)
+}
+
+pub fn validate_public_path_token(value: &str) -> Result<String, AppError> {
+    let token = value.trim();
+    if !(8..=64).contains(&token.len()) {
+        return Err(AppError::new(
+            "invalid_public_path_token",
+            "Use 8 to 64 letters, numbers, hyphens, or underscores.",
+        ));
+    }
+    if !token
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(AppError::new(
+            "invalid_public_path_token",
+            "Use only letters, numbers, hyphens, or underscores.",
+        ));
+    }
+    Ok(token.to_string())
 }
 
 pub fn validate_workspace_path(path: &str) -> Result<String, AppError> {
@@ -178,7 +232,15 @@ pub fn validate_workspace_path(path: &str) -> Result<String, AppError> {
             "Do not expose a drive root or filesystem root.",
         ));
     }
-    Ok(canonical.to_string_lossy().to_string())
+    if is_home_directory(&canonical) || is_system_directory(&canonical) {
+        return Err(AppError::new(
+            "unsafe_folder",
+            "Pick a project folder, not a home, system, or application folder.",
+        ));
+    }
+    Ok(normalize_windows_verbatim_prefix(
+        &canonical.to_string_lossy(),
+    ))
 }
 
 pub fn write_managed_mcp_config(paths: &AppPaths, settings: &Settings) -> Result<(), AppError> {
@@ -227,18 +289,72 @@ pub fn write_managed_mcp_config(paths: &AppPaths, settings: &Settings) -> Result
 
 pub fn mcp_url(settings: &Settings) -> String {
     format!(
-        "https://{}.share.zrok.io/t/{}/mcp",
+        "https://{}.shares.zrok.io/t/{}/mcp",
         settings.zrok_name, settings.public_path_token
     )
 }
 
-pub fn gpt_repo_mcp_exists(settings: &Settings) -> bool {
-    let root = Path::new(&settings.gpt_repo_mcp_path);
-    root.join("package.json").is_file() && root.join("src").is_dir()
+fn launch_env(variable: &str) -> Option<String> {
+    env::var_os(variable)
+        .map(|value| value.to_string_lossy().trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn is_filesystem_root(path: &Path) -> bool {
     path.parent().is_none()
+}
+
+fn is_home_directory(path: &Path) -> bool {
+    ["USERPROFILE", "HOME"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .filter_map(|home| fs::canonicalize(home).ok())
+        .any(|home| same_path(&home, path))
+}
+
+fn is_system_directory(path: &Path) -> bool {
+    system_directory_candidates()
+        .into_iter()
+        .filter_map(|candidate| fs::canonicalize(candidate).ok())
+        .any(|candidate| same_path(&candidate, path))
+}
+
+fn system_directory_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    for variable in [
+        "WINDIR",
+        "SystemRoot",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+    ] {
+        if let Some(value) = std::env::var_os(variable) {
+            candidates.push(PathBuf::from(value));
+        }
+    }
+    if cfg!(windows) {
+        candidates.extend([
+            PathBuf::from(r"C:\Windows"),
+            PathBuf::from(r"C:\Program Files"),
+        ]);
+    } else {
+        candidates.extend([
+            PathBuf::from("/bin"),
+            PathBuf::from("/etc"),
+            PathBuf::from("/usr"),
+        ]);
+    }
+    candidates
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    if cfg!(windows) {
+        normalize_windows_verbatim_prefix(&left.to_string_lossy())
+            .eq_ignore_ascii_case(&normalize_windows_verbatim_prefix(&right.to_string_lossy()))
+    } else {
+        left == right
+    }
 }
 
 fn default_version() -> u32 {
@@ -258,6 +374,15 @@ fn default_zrok_name() -> String {
     format!("gptmcp{}", &token[..12])
 }
 
+pub fn fresh_public_path_token() -> String {
+    default_public_path_token()
+}
+
+pub fn fresh_zrok_name() -> String {
+    let token = fresh_public_path_token();
+    format!("gptmcp{}", &token[..12])
+}
+
 fn default_gpt_repo_mcp_path() -> String {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
     home.map(PathBuf::from)
@@ -271,9 +396,28 @@ fn default_gpt_repo_mcp_path() -> String {
         .unwrap_or_else(|| "gpt-repo-mcp".to_string())
 }
 
+pub fn normalize_windows_verbatim_prefix(path: &str) -> String {
+    if let Some(stripped) = path.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{stripped}")
+    } else if let Some(stripped) = path.strip_prefix("\\\\?\\") {
+        stripped.to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{validate_zrok_name, AccessMode};
+    use super::{
+        apply_launch_environment_overrides, fresh_public_path_token, fresh_zrok_name,
+        is_home_directory, load_or_create_settings, normalize_windows_verbatim_prefix,
+        save_settings, validate_public_path_token, validate_zrok_name, AccessMode, AppPaths,
+        Settings,
+    };
+    use std::sync::Mutex;
+    use std::{env, fs};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn validates_zrok_names() {
@@ -284,6 +428,28 @@ mod tests {
     }
 
     #[test]
+    fn validates_public_path_tokens() {
+        assert_eq!(
+            validate_public_path_token(" token_123-abc ").unwrap(),
+            "token_123-abc"
+        );
+        assert!(validate_public_path_token("short").is_err());
+        assert!(validate_public_path_token("has space").is_err());
+        assert!(validate_public_path_token("has/slash").is_err());
+    }
+
+    #[test]
+    fn generates_fresh_zrok_identity() {
+        let name = fresh_zrok_name();
+        let token = fresh_public_path_token();
+        assert_eq!(validate_zrok_name(&name).unwrap(), name);
+        assert_eq!(validate_public_path_token(&token).unwrap(), token);
+        assert_ne!(fresh_zrok_name(), name);
+        assert_ne!(fresh_public_path_token(), token);
+        assert!(name.starts_with("gptmcp"));
+    }
+
+    #[test]
     fn parses_access_modes() {
         assert_eq!(AccessMode::parse("read").unwrap(), AccessMode::Read);
         assert_eq!(
@@ -291,5 +457,120 @@ mod tests {
             AccessMode::ReadWrite
         );
         assert!(AccessMode::parse("ship").is_err());
+    }
+
+    #[test]
+    fn normalizes_windows_verbatim_prefixes() {
+        assert_eq!(
+            normalize_windows_verbatim_prefix(r"\\?\C:\Users\George\Project"),
+            r"C:\Users\George\Project"
+        );
+        assert_eq!(
+            normalize_windows_verbatim_prefix(r"\\?\UNC\server\share\Project"),
+            r"\\server\share\Project"
+        );
+        assert_eq!(
+            normalize_windows_verbatim_prefix(r"C:\Users\George\Project"),
+            r"C:\Users\George\Project"
+        );
+    }
+
+    #[test]
+    fn detects_configured_home_directory() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = env::temp_dir().join(format!("secret-tunnel-home-test-{}", std::process::id()));
+        fs::create_dir_all(&home).unwrap();
+        let previous = env::var_os("USERPROFILE");
+        env::set_var("USERPROFILE", &home);
+        assert!(is_home_directory(&fs::canonicalize(&home).unwrap()));
+        if let Some(previous) = previous {
+            env::set_var("USERPROFILE", previous);
+        } else {
+            env::remove_var("USERPROFILE");
+        }
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn clears_unsafe_saved_workspace_path() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = env::temp_dir().join(format!(
+            "secret-tunnel-settings-test-{}",
+            std::process::id()
+        ));
+        let home = root.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let paths = AppPaths {
+            settings_path: root.join("settings.json"),
+            managed_config_path: root.join("gpt-repo-mcp.config.json"),
+        };
+        let previous = env::var_os("USERPROFILE");
+        env::set_var("USERPROFILE", &home);
+        let settings = Settings {
+            workspace_path: Some(home.to_string_lossy().to_string()),
+            ..Settings::default()
+        };
+        save_settings(&paths, &settings).unwrap();
+
+        let loaded = load_or_create_settings(&paths).unwrap();
+        assert_eq!(loaded.workspace_path, None);
+
+        if let Some(previous) = previous {
+            env::set_var("USERPROFILE", previous);
+        } else {
+            env::remove_var("USERPROFILE");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn applies_launch_environment_overrides() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let root = env::temp_dir().join(format!(
+            "secret-tunnel-launch-env-test-{}",
+            std::process::id()
+        ));
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        let paths = AppPaths {
+            settings_path: root.join("settings.json"),
+            managed_config_path: root.join("gpt-repo-mcp.config.json"),
+        };
+
+        let previous_workspace = env::var_os("SECRET_TUNNEL_WORKSPACE_PATH");
+        let previous_mode = env::var_os("SECRET_TUNNEL_ACCESS_MODE");
+        let previous_name = env::var_os("SECRET_TUNNEL_ZROK_NAME");
+        let previous_token = env::var_os("SECRET_TUNNEL_PUBLIC_PATH_TOKEN");
+
+        env::set_var("SECRET_TUNNEL_WORKSPACE_PATH", &workspace);
+        env::set_var("SECRET_TUNNEL_ACCESS_MODE", "read_write");
+        env::set_var("SECRET_TUNNEL_ZROK_NAME", "Launch-MCP-1");
+        env::set_var("SECRET_TUNNEL_PUBLIC_PATH_TOKEN", "token_123456");
+
+        assert!(apply_launch_environment_overrides(&paths).unwrap());
+        let loaded = load_or_create_settings(&paths).unwrap();
+        assert_eq!(loaded.access_mode, AccessMode::ReadWrite);
+        assert_eq!(loaded.zrok_name, "launch-mcp-1");
+        assert_eq!(loaded.public_path_token, "token_123456");
+        assert_eq!(
+            loaded.workspace_path,
+            Some(normalize_windows_verbatim_prefix(
+                &fs::canonicalize(&workspace).unwrap().to_string_lossy()
+            ))
+        );
+
+        restore_env("SECRET_TUNNEL_WORKSPACE_PATH", previous_workspace);
+        restore_env("SECRET_TUNNEL_ACCESS_MODE", previous_mode);
+        restore_env("SECRET_TUNNEL_ZROK_NAME", previous_name);
+        restore_env("SECRET_TUNNEL_PUBLIC_PATH_TOKEN", previous_token);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn restore_env(variable: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            env::set_var(variable, value);
+        } else {
+            env::remove_var(variable);
+        }
     }
 }

@@ -12,6 +12,15 @@ dist
 dist-ssr
 src-tauri/target
 src-tauri/gen
+src-tauri/binaries/zrok2.exe
+src-tauri/binaries/zrok2
+src-tauri/binaries/.zrok-source.json
+src-tauri/binaries/zrok-source.json
+src-tauri/binaries/node.exe
+src-tauri/binaries/node
+src-tauri/binaries/node-source.json
+src-tauri/resources/gpt-repo-mcp/
+.runtime-cache/
 *.local
 
 # Editor directories and files

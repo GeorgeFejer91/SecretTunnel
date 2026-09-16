@@ -15,7 +15,7 @@ ChatGPT through a stable zrok URL.
 
 - Version: `0.1.0`
 - Local MCP server: `127.0.0.1:8787`, tunneled via bundled `zrok2`
-- ChatGPT URL: `https://<name>.share.zrok.io/t/<token>/mcp`
+- ChatGPT URL: `https://<name>.shares.zrok.io/t/<token>/mcp`
 - Requires a one-time zrok enable token on first run
 - Read-only mode (`GPT_REPO_READ_ONLY_SURFACE=1`) removes write tools entirely
 - Read+write mode only enables file-write tools; git/validation ops stay off
