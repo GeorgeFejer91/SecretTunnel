@@ -18,6 +18,18 @@ on:
   pull_request:
     branches: [main]
 
+# One build per branch or tag. A newer push makes an in-flight build obsolete,
+# so supersede it instead of letting several full three-platform matrices queue
+# and compete for the limited macOS runners - which is what happened on the
+# first day: four runs, twelve jobs, all building commits nobody was waiting on.
+#
+# Tag builds are deliberately never cancelled: they produce the release
+# artifacts, so losing one to a later push would silently leave a tag with no
+# installers behind it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 defaults:
   run:
     working-directory: app
