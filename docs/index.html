@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Secret Tunnel — give ChatGPT one folder on your computer</title>
+    <title>Secret Tunnel v1 — give ChatGPT one folder on your computer</title>
     <meta
       name="description"
       content="A small desktop app that lets ChatGPT read, and optionally edit, one folder on your machine through a stable private URL."
@@ -127,6 +127,19 @@
         vertical-align: middle;
       }
       .badge.ok { background: #064e3b; color: var(--ok); }
+      .version-chip {
+        display: inline-block;
+        margin-bottom: 10px;
+        padding: 2px 12px;
+        border: 1px solid var(--accent-deep);
+        border-radius: 999px;
+        background: #042f2e;
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }
+      .version-chip a { color: inherit; }
       .badge.beta { background: #422006; color: var(--warn); }
       .note {
         margin: 18px 0;
@@ -158,13 +171,14 @@
   <body>
     <div class="wrap">
       <header>
-        <h1 class="sr-only">Secret Tunnel</h1>
+        <h1 class="sr-only">Secret Tunnel v1</h1>
         <img
           class="hero-logo"
           src="secret-tunnel-cloud.svg"
           alt="A local computer connected to a cloud through a tunnel"
         />
         <div class="title-art" role="img" aria-label="Secret Tunnel"></div>
+        <p class="version-chip">version 1</p>
         <p class="tagline">Give ChatGPT one folder on your computer.</p>
       </header>
 
@@ -173,6 +187,12 @@
         server locally and gives it a stable private HTTPS address, so ChatGPT can read — and if you
         allow it, edit — the files in a single folder you choose. Nothing is uploaded in advance.
       </p>
+
+      <div class="note" style="border-color: var(--accent-deep); background: #042f2e">
+        <strong>This is version 1.</strong> A newer Secret Tunnel v2 is published as source at
+        <a href="https://georgefejer91.github.io/secret-tunnel/">its own page</a>; it has no
+        installer yet. Version 1, below, is the one with ready-made downloads.
+      </div>
 
       <h2>Download</h2>
       <div class="downloads">
