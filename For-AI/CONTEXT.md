@@ -88,3 +88,6 @@ bypass. See `For-AI/constraints/project-constraints.md`.
 ## Owner
 
 George Fejer (GitHub: `GeorgeFejer91`).
+## HTML UI skill route for explicitly authorized changes
+
+Version 0.1.0 is a preserved reference, not a request to redesign or retrofit it. If a future task explicitly changes its text-bearing Tauri HTML UI, load [`uncodixfy-pretext`](https://github.com/GeorgeFejer91/uncodixfy-pretext/blob/main/SKILL.md) and its Pretext reference. It nests Ponytail and original Uncodixfy aesthetics; use actual `@chenglou/pretext` measurement for bounded text in the touched UI and verify the rendered target at narrow sizes, 200% text/zoom, and long labels. Do not claim that the current v1 UI already implements this protocol.
